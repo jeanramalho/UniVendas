@@ -1,0 +1,6 @@
+{
+  "name": "UniVendas — Pioneiros da Colina",
+  "description": "Sistema de gestão de vendas de uniformes, controle de estoque, pedidos a fornecedores, recebimento de mercadorias, entregas e relatórios em Excel para o Clube de Desbravadores Pioneiros da Colina.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
