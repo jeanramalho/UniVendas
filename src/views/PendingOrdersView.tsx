@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sale, SaleItem, PurchaseBatch } from '../types';
+import { Sale, SaleItem } from '../types';
 import { Clock, Filter, Package, CheckSquare, Square, ArrowRight, AlertTriangle } from 'lucide-react';
 
 interface PendingOrdersViewProps {
@@ -15,8 +15,8 @@ export const PendingOrdersView: React.FC<PendingOrdersViewProps> = ({ sales, onC
   const eligibleItems: { sale: Sale; item: SaleItem }[] = [];
 
   sales.forEach((s) => {
-    // Must be paid or partially paid
     if (s.overallStatus === 'cancelada') return;
+    if (s.paymentStatus !== 'pago') return;
 
     s.items.forEach((item) => {
       if (item.status === 'pedido_a_fazer' && !item.batchId) {

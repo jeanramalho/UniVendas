@@ -1,21 +1,23 @@
 import React, { useState } from 'react';
 import { Product, ProductCategory, ProductVariant } from '../types';
-import { ShoppingBag, Plus, Edit2, Layers, AlertTriangle, X, Tag } from 'lucide-react';
+import { ShoppingBag, Plus, Edit2, Layers, X, Trash2 } from 'lucide-react';
+import { fetchProductSizes, ProductSize } from '../lib/supabaseDb';
+import { ProductSizesManager } from '../components/ProductSizesManager';
 
 interface ProductsViewProps {
   products: Product[];
   categories: ProductCategory[];
-  referenceSizes: string[];
-  onAddProduct: (newP: Product) => void;
-  onUpdateProduct: (updatedP: Product) => void;
+  onAddProduct: (newP: Product, sizeNames: string[]) => Promise<Product | void> | Product | void;
+  onUpdateProduct: (updatedP: Product, sizeNames?: string[]) => Promise<Product | void> | Product | void;
+  onDeleteProduct: (productId: string) => void;
 }
 
 export const ProductsView: React.FC<ProductsViewProps> = ({
   products,
   categories,
-  referenceSizes,
   onAddProduct,
-  onUpdateProduct
+  onUpdateProduct,
+  onDeleteProduct
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -23,6 +25,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   // Modals
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [showSizesManager, setShowSizesManager] = useState(false);
+  const [sizesManagerProduct, setSizesManagerProduct] = useState<Product | null>(null);
+
+  // Custom sizes for current product
+  const [customSizes, setCustomSizes] = useState<ProductSize[]>([]);
+  const [loadingCustomSizes, setLoadingCustomSizes] = useState(false);
+  const [variantStocks, setVariantStocks] = useState<Record<string, number>>({});
 
   // Form State
   const [formData, setFormData] = useState<Partial<Product>>({
@@ -49,7 +58,37 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     return true;
   });
 
-  const openCreateModal = () => {
+  const loadCustomSizes = async (productId: string) => {
+    setLoadingCustomSizes(true);
+    const sizes = await fetchProductSizes(productId);
+    setCustomSizes(sizes || []);
+    setLoadingCustomSizes(false);
+  };
+
+  const buildVariantsFromSizes = (product: Product, sizes: ProductSize[]): ProductVariant[] => {
+    const existingBySize = new Map(product.variants.map((variant) => [variant.size, variant]));
+
+    return sizes.map((size) => {
+      const existing = existingBySize.get(size.sizeName);
+      const normalizedSize = size.sizeName.replace(/\s+/g, '').toUpperCase();
+
+      return {
+        id: existing?.id || `v-${Date.now()}-${size.id}`,
+        sku: existing?.sku || `${product.sku || product.code || 'PROD'}-${normalizedSize}`,
+        size: size.sizeName,
+        color: existing?.color || '',
+        model: existing?.model || '',
+        gender: existing?.gender || 'Unissex',
+        price: product.basePrice || existing?.price || 45.0,
+        costPrice: product.costPrice || existing?.costPrice || 28.0,
+        physicalStock: variantStocks[size.sizeName] ?? existing?.physicalStock ?? 0,
+        reservedStock: existing?.reservedStock || 0
+      };
+    });
+  };
+
+  const openCreateModal = async () => {
+    // For new products, start with no sizes, user will add via manager
     setFormData({
       name: '',
       sku: `PROD-${Date.now().toString().slice(-4)}`,
@@ -62,51 +101,102 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       allowSaleWithoutStock: true,
       minStock: 5,
       active: true,
-      variants: referenceSizes.slice(0, 5).map((sz, idx) => ({
-        id: `v-new-${idx}`,
-        sku: `SKU-${sz.replace(/\s+/g, '')}`,
-        size: sz,
-        price: 45.0,
-        costPrice: 28.0,
-        physicalStock: 10,
-        reservedStock: 0
-      }))
+      variants: []
     });
+    setCustomSizes([]);
+    setVariantStocks({});
     setIsCreating(true);
   };
 
-  const openEditModal = (p: Product) => {
+  const openEditModal = async (p: Product) => {
     setEditingProduct(p);
     setFormData(p);
+    setVariantStocks(
+      p.variants.reduce<Record<string, number>>((acc, variant) => {
+        acc[variant.size] = variant.physicalStock;
+        return acc;
+      }, {})
+    );
+    await loadCustomSizes(p.id);
   };
 
-  const handleSaveProduct = (e: React.FormEvent) => {
+  const openSizesManager = (product: Product) => {
+    setSizesManagerProduct(product);
+    setShowSizesManager(true);
+  };
+
+  const handleSizesManagerClose = async () => {
+    setShowSizesManager(false);
+
+    if (sizesManagerProduct) {
+      const savedSizes = await fetchProductSizes(sizesManagerProduct.id);
+      const nextSizes = savedSizes || [];
+      setCustomSizes(nextSizes);
+      const updatedProduct = {
+        ...sizesManagerProduct,
+        variants: buildVariantsFromSizes(sizesManagerProduct, nextSizes),
+        updatedAt: new Date().toISOString()
+      };
+      onUpdateProduct(updatedProduct, nextSizes.map((size) => size.sizeName));
+    }
+
+    setSizesManagerProduct(null);
+    if (editingProduct) {
+      loadCustomSizes(editingProduct.id);
+    }
+  };
+
+  const handleDeleteProduct = (productId: string) => {
+    if (confirm('Tem certeza que deseja EXCLUIR este produto? Esta ação não pode ser desfeita!')) {
+      onDeleteProduct(productId);
+    }
+  };
+
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name) return;
+    if (!formData.name) {
+      alert('Nome do produto é obrigatório');
+      return;
+    }
+
+    if (customSizes.length === 0) {
+      alert('Você deve adicionar pelo menos um tamanho ao produto. Clique em "Gerenciar Tamanhos"');
+      return;
+    }
 
     const categoryObj = categories.find((c) => c.id === formData.categoryId);
 
+    const baseProduct = {
+      ...(formData as Product),
+      categoryName: categoryObj?.name || formData.categoryName || 'Geral'
+    };
+    const variants = buildVariantsFromSizes(baseProduct, customSizes);
+    const sizeNames = customSizes.map((size) => size.sizeName);
+
     if (isCreating) {
       const newP: Product = {
-        ...(formData as Product),
+        ...baseProduct,
         id: `prod-${Date.now()}`,
         code: `P-${String(products.length + 1).padStart(3, '0')}`,
-        categoryName: categoryObj?.name || 'Geral',
+        variants,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-      onAddProduct(newP);
+      await onAddProduct(newP, sizeNames);
       setIsCreating(false);
     } else if (editingProduct) {
       const updated: Product = {
         ...editingProduct,
-        ...formData,
+        ...baseProduct,
         categoryName: categoryObj?.name || editingProduct.categoryName,
+        variants,
         updatedAt: new Date().toISOString()
       };
-      onUpdateProduct(updated);
+      await onUpdateProduct(updated, sizeNames);
       setEditingProduct(null);
     }
+    setCustomSizes([]);
+    setVariantStocks({});
   };
 
   return (
@@ -223,14 +313,30 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 </div>
               </div>
 
-              {/* Action Button */}
-              <div className="pt-2 flex justify-end">
+              {/* Action Buttons */}
+              <div className="pt-2 flex gap-2 justify-end">
+                <button
+                  onClick={() => openSizesManager(p)}
+                  className="flex items-center space-x-1.5 text-xs text-gray-300 hover:text-blue-400 bg-[#111111] hover:bg-blue-900/20 px-3 py-1.5 rounded-lg border border-[#333333] transition"
+                  title="Gerenciar tamanhos"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Tamanhos</span>
+                </button>
                 <button
                   onClick={() => openEditModal(p)}
                   className="flex items-center space-x-1.5 text-xs text-gray-300 hover:text-[#F97316] bg-[#111111] hover:bg-gray-800 px-3 py-1.5 rounded-lg border border-[#333333] transition"
                 >
                   <Edit2 className="w-3.5 h-3.5" />
-                  <span>Editar Produto</span>
+                  <span>Editar</span>
+                </button>
+                <button
+                  onClick={() => handleDeleteProduct(p.id)}
+                  className="flex items-center space-x-1.5 text-xs text-red-300 hover:text-red-100 bg-red-900/10 hover:bg-red-900/30 px-3 py-1.5 rounded-lg border border-red-500/30 transition"
+                  title="Deletar produto"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Deletar</span>
                 </button>
               </div>
             </div>
@@ -324,37 +430,64 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
             {/* Variants table */}
             <div className="space-y-2 pt-2 border-t border-[#2e2e2e]">
-              <h4 className="text-xs font-bold text-[#F97316] uppercase tracking-wider">
-                Tamanhos e Estoques Físicos
-              </h4>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {(formData.variants || []).map((v, idx) => (
-                  <div
-                    key={v.id || idx}
-                    className="grid grid-cols-3 gap-2 bg-[#111111] p-2 rounded border border-[#222222] text-xs items-center"
-                  >
-                    <div className="font-bold text-white">{v.size}</div>
-                    <div>
-                      <span className="text-[10px] text-gray-500 block">Estoque Físico:</span>
-                      <input
-                        type="number"
-                        value={v.physicalStock}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value) || 0;
-                          const nextV = [...(formData.variants || [])];
-                          nextV[idx].physicalStock = val;
-                          setFormData({ ...formData, variants: nextV });
-                        }}
-                        className="w-full bg-[#1a1a1a] border border-[#333333] rounded px-2 py-1 text-white font-mono"
-                      />
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-gray-500 block">Reservado:</span>
-                      <span className="font-mono text-amber-400 font-bold">{v.reservedStock}</span>
-                    </div>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-[#F97316] uppercase tracking-wider">
+                  Tamanhos e Estoques Físicos
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (editingProduct) {
+                      openSizesManager(editingProduct);
+                    } else {
+                      setShowSizesManager(true);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Gerenciar Tamanhos</span>
+                </button>
               </div>
+
+              {loadingCustomSizes ? (
+                <div className="text-xs text-gray-400 py-4">Carregando tamanhos...</div>
+              ) : customSizes.length === 0 ? (
+                <div className="text-xs text-yellow-400 bg-yellow-900/20 p-3 rounded border border-yellow-500/30">
+                  ⚠️ Nenhum tamanho cadastrado. Clique em "Gerenciar Tamanhos" para adicionar.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {customSizes.map((size, idx) => (
+                    <div
+                      key={size.id}
+                      className="grid grid-cols-3 gap-2 bg-[#111111] p-2 rounded border border-[#222222] text-xs items-center"
+                    >
+                      <div className="font-bold text-white">{size.sizeName}</div>
+                      <div>
+                        <span className="text-[10px] text-gray-500 block">Estoque Físico:</span>
+                        <input
+                          type="number"
+                          placeholder="0"
+                          min="0"
+                          value={variantStocks[size.sizeName] ?? 0}
+                          onChange={(e) => {
+                            setVariantStocks({
+                              ...variantStocks,
+                              [size.sizeName]: Math.max(0, parseInt(e.target.value, 10) || 0)
+                            });
+                          }}
+                          className="w-full bg-[#1a1a1a] border border-[#333333] rounded px-2 py-1 text-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-gray-500 block">Reservado:</span>
+                        <span className="font-mono text-amber-400 font-bold">0</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="pt-4 border-t border-[#2e2e2e] flex items-center justify-end space-x-2">
@@ -377,6 +510,17 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             </div>
           </form>
         </div>
+      )}
+
+      {/* Modal: Gerenciar Tamanhos */}
+      {showSizesManager && (
+        <ProductSizesManager
+          productId={sizesManagerProduct?.id}
+          productName={sizesManagerProduct?.name || formData.name || 'Novo produto'}
+          initialSizes={customSizes}
+          onSizesChange={setCustomSizes}
+          onClose={handleSizesManagerClose}
+        />
       )}
     </div>
   );

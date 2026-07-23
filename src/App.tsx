@@ -59,6 +59,8 @@ import {
   deleteMemberFromSupabase,
   fetchProductsFromSupabase,
   saveProductToSupabase,
+  deleteProductFromSupabase,
+  saveProductSizesToSupabase,
   fetchSalesFromSupabase,
   saveSaleToSupabase,
   fetchCategoriesFromSupabase,
@@ -195,14 +197,46 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const handleAddProduct = (p: Product) => {
+  const handleAddProduct = async (p: Product, sizeNames: string[] = []) => {
     setProducts((prev) => [p, ...prev]);
-    void saveProductToSupabase(p);
+    const savedProduct = await saveProductToSupabase(p);
+
+    if (!savedProduct) return p;
+
+    if (sizeNames.length > 0) {
+      await saveProductSizesToSupabase(savedProduct.id, sizeNames);
+    }
+
+    const savedVariantsBySize = new Map(savedProduct.variants.map((variant) => [variant.size, variant]));
+    const syncedProduct = await saveProductToSupabase({
+      ...savedProduct,
+      variants: p.variants.map((variant) => ({
+        ...variant,
+        id: savedVariantsBySize.get(variant.size)?.id || variant.id
+      }))
+    });
+    const finalProduct = syncedProduct || { ...savedProduct, variants: p.variants };
+
+    setProducts((prev) => prev.map((item) => (item.id === p.id || item.id === finalProduct.id ? finalProduct : item)));
+    return finalProduct;
   };
 
-  const handleUpdateProduct = (p: Product) => {
+  const handleUpdateProduct = async (p: Product, sizeNames?: string[]) => {
     setProducts((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-    void saveProductToSupabase(p);
+    if (sizeNames) {
+      await saveProductSizesToSupabase(p.id, sizeNames);
+    }
+    const savedProduct = await saveProductToSupabase(p);
+    if (savedProduct) {
+      setProducts((prev) => prev.map((x) => (x.id === p.id ? savedProduct : x)));
+      return savedProduct;
+    }
+    return p;
+  };
+
+  const handleDeleteProduct = (productId: string) => {
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+    void deleteProductFromSupabase(productId);
   };
 
   const handleAddKit = (k: Kit) => {
@@ -215,17 +249,24 @@ const AppContent: React.FC = () => {
     void saveSaleToSupabase(newSale);
 
     // Reserve or update product stocks
+    if (newSale.paymentStatus !== 'pago') return;
+
     setProducts((prev) =>
       prev.map((p) => {
-        const itemInSale = newSale.items.find((i) => i.productId === p.id);
-        if (!itemInSale) return p;
+        const itemsInSale = newSale.items.filter((i) => i.productId === p.id && i.status === 'reservado');
+        if (itemsInSale.length === 0) return p;
 
         const updatedProd = {
           ...p,
           variants: p.variants.map((v) => {
-            if (v.id === itemInSale.variantId && itemInSale.status === 'reservado') {
-              return { ...v, reservedStock: v.reservedStock + itemInSale.quantity };
+            const reservedQuantity = itemsInSale
+              .filter((item) => item.variantId === v.id)
+              .reduce((total, item) => total + item.quantity, 0);
+
+            if (reservedQuantity > 0) {
+              return { ...v, reservedStock: v.reservedStock + reservedQuantity };
             }
+
             return v;
           })
         };
@@ -256,10 +297,11 @@ const AppContent: React.FC = () => {
   const handleCreateBatchFromPending = (selected: { sale: Sale; item: any }[]) => {
     const totalItemsCount = selected.reduce((a, s) => a + s.item.quantity, 0);
     const estimatedCost = totalItemsCount * 28.0;
+    const batchId = crypto.randomUUID();
 
     const newBatchItems: PurchaseBatchItem[] = selected.map(({ sale, item }) => ({
-      id: `pbi-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      batchId: '',
+      id: crypto.randomUUID(),
+      batchId,
       saleItemId: item.id,
       saleCode: sale.code,
       memberId: sale.memberId,
@@ -283,7 +325,7 @@ const AppContent: React.FC = () => {
     ).padStart(2, '0')}-${String(batches.length + 1).padStart(3, '0')}`;
 
     const newBatch: PurchaseBatch = {
-      id: `batch-${Date.now()}`,
+      id: batchId,
       code: batchCode,
       supplierName: 'Uniformização Desbravadores Brasil',
       status: 'enviado_fornecedor',
@@ -298,6 +340,34 @@ const AppContent: React.FC = () => {
     };
 
     setBatches([newBatch, ...batches]);
+    void savePurchaseBatchToSupabase(newBatch);
+
+    const selectedItemIds = new Set(selected.map(({ item }) => item.id));
+    const updatedSales = sales.map((sale) => {
+      const updatedItems = sale.items.map((item) => {
+        if (!selectedItemIds.has(item.id)) return item;
+        return {
+          ...item,
+          status: 'incluido_em_lote' as const,
+          batchId,
+          batchCode
+        };
+      });
+
+      const hasChanges = updatedItems.some((item, index) => item !== sale.items[index]);
+      if (!hasChanges) return sale;
+
+      const updatedSale = {
+        ...sale,
+        items: updatedItems,
+        overallStatus: 'aguardando_fornecedor' as const,
+        updatedAt: new Date().toISOString()
+      };
+      void saveSaleToSupabase(updatedSale);
+      return updatedSale;
+    });
+
+    setSales(updatedSales);
     setActiveTab('batches');
   };
 
@@ -429,9 +499,9 @@ const AppContent: React.FC = () => {
           <ProductsView
             products={products}
             categories={categories}
-            referenceSizes={INITIAL_SETTINGS.referenceSizes}
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
+            onDeleteProduct={handleDeleteProduct}
           />
         );
       case 'kits':

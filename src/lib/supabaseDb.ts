@@ -7,6 +7,7 @@ import {
   Product,
   ProductCategory,
   PurchaseBatch,
+  Sale,
   UserProfile
 } from '../types';
 
@@ -129,36 +130,53 @@ export async function deleteMemberFromSupabase(memberId: string): Promise<boolea
 // PRODUCTS (Produtos)
 // ==========================================
 
-export async function fetchProductsFromSupabase(): Promise<Product[] | null> {
-  if (!isSupabaseConfigured) return null;
-  try {
-    const { data: prods, error: pErr } = await supabase
-      .from('products')
-      .select('*, product_variants(*)');
+function rowToProduct(p: any): Product {
+  const savedSizes = (p.product_sizes || [])
+    .filter((s: any) => s.active !== false)
+    .sort((a: any, b: any) => (a.size_order || 0) - (b.size_order || 0))
+    .map((s: any) => s.size_name);
+  const allowedSizeSet = savedSizes.length > 0 ? new Set(savedSizes) : null;
+  const existingVariants = (p.product_variants || []).filter((v: any) => !allowedSizeSet || allowedSizeSet.has(v.size));
+  const variantsBySize = new Map(existingVariants.map((v: any) => [v.size, v]));
+  const orderedVariantRows =
+    savedSizes.length > 0
+      ? savedSizes.map((sizeName) => {
+          const existing = variantsBySize.get(sizeName);
+          return (
+            existing || {
+              id: `missing-variant-${p.id}-${sizeName}`,
+              sku: `${p.sku || p.code}-${sizeName.replace(/\s+/g, '').toUpperCase()}`,
+              size: sizeName,
+              color: '',
+              model: '',
+              gender: 'Unissex',
+              price: p.base_price,
+              cost_price: p.cost_price,
+              physical_stock: 0,
+              reserved_stock: 0
+            }
+          );
+        })
+      : existingVariants.sort((a: any, b: any) => a.size.localeCompare(b.size));
 
-    if (pErr) {
-      console.warn('Supabase fetch products error:', pErr.message);
-      return null;
-    }
-
-    return (prods || []).map((p: any) => ({
-      id: p.id,
-      code: p.code,
-      sku: p.sku || p.code,
-      name: p.name,
-      description: p.description || '',
-      categoryId: p.category_id || '',
-      categoryName: p.category_name || '',
-      imageUrl: p.image_url || '',
-      supplierName: p.supplier_name || '',
-      basePrice: Number(p.base_price || 0),
-      costPrice: Number(p.cost_price || 0),
-      active: p.active !== false,
-      controlStock: p.control_stock !== false,
-      allowSaleWithoutStock: p.allow_sale_without_stock !== false,
-      minStock: p.min_stock || 5,
-      variants: (p.product_variants || []).map((v: any) => ({
-        id: v.id,
+  return {
+    id: p.id,
+    code: p.code,
+    sku: p.sku || p.code,
+    name: p.name,
+    description: p.description || '',
+    categoryId: p.category_id || '',
+    categoryName: p.product_categories?.name || '',
+    imageUrl: p.image_url || '',
+    supplierName: p.supplier_name || '',
+    basePrice: Number(p.base_price || 0),
+    costPrice: Number(p.cost_price || 0),
+    active: p.active !== false,
+    controlStock: p.control_stock !== false,
+    allowSaleWithoutStock: p.allow_sale_without_stock !== false,
+    minStock: p.min_stock || 5,
+    variants: orderedVariantRows.map((v: any) => ({
+        id: String(v.id),
         sku: v.sku,
         size: v.size,
         color: v.color || '',
@@ -169,24 +187,49 @@ export async function fetchProductsFromSupabase(): Promise<Product[] | null> {
         physicalStock: Number(v.physical_stock || 0),
         reservedStock: Number(v.reserved_stock || 0)
       })),
-      createdAt: p.created_at || new Date().toISOString(),
-      updatedAt: p.updated_at || new Date().toISOString()
-    }));
+    createdAt: p.created_at || new Date().toISOString(),
+    updatedAt: p.updated_at || new Date().toISOString()
+  };
+}
+
+export async function fetchProductsFromSupabase(): Promise<Product[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data: prods, error: pErr } = await supabase
+      .from('products')
+      .select('*, product_categories(name), product_variants(*), product_sizes(*)');
+
+    if (pErr) {
+      console.warn('Supabase fetch products error:', pErr.message);
+      return null;
+    }
+
+    const products = (prods || []).map(rowToProduct);
+    return await Promise.all(
+      products.map(async (product) => {
+        const hasMissingVariants = product.variants.some((variant) => variant.id.startsWith('missing-variant-'));
+        if (!hasMissingVariants) return product;
+
+        return (await saveProductToSupabase(product)) || product;
+      })
+    );
   } catch (err) {
     console.warn('Supabase fetch products failed:', err);
     return null;
   }
 }
 
-export async function saveProductToSupabase(product: Product): Promise<boolean> {
-  if (!isSupabaseConfigured) return false;
+export async function saveProductToSupabase(product: Product): Promise<Product | null> {
+  if (!isSupabaseConfigured) return null;
   try {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(product.id);
+    const categoryIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(product.categoryId);
     const pRow: any = {
       code: product.code,
       sku: product.sku || product.code,
       name: product.name,
       description: product.description || null,
+      category_id: categoryIsUuid ? product.categoryId : null,
       supplier_name: product.supplierName || null,
       base_price: product.basePrice,
       cost_price: product.costPrice,
@@ -202,12 +245,23 @@ export async function saveProductToSupabase(product: Product): Promise<boolean> 
     const { data, error } = await supabase.from('products').upsert(pRow, { onConflict: 'code' }).select();
     if (error || !data || data.length === 0) {
       console.warn('Supabase upsert product error:', error?.message);
-      return false;
+      return null;
     }
 
     const savedProductId = data[0].id;
 
     if (product.variants && product.variants.length > 0) {
+      const variantSizes = product.variants.map((v) => v.size);
+      const { error: deleteErr } = await supabase
+        .from('product_variants')
+        .delete()
+        .eq('product_id', savedProductId)
+        .not('size', 'in', `(${variantSizes.map((s) => `"${s.replace(/"/g, '\\"')}"`).join(',')})`);
+
+      if (deleteErr) {
+        console.warn('Supabase delete stale product variants error:', deleteErr.message);
+      }
+
       const variantRows = product.variants.map((v) => {
         const vIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v.id);
         const vr: any = {
@@ -226,9 +280,223 @@ export async function saveProductToSupabase(product: Product): Promise<boolean> 
       await supabase.from('product_variants').upsert(variantRows);
     }
 
-    return true;
+    const { data: savedProduct, error: fetchErr } = await supabase
+      .from('products')
+      .select('*, product_categories(name), product_variants(*), product_sizes(*)')
+      .eq('id', savedProductId)
+      .maybeSingle();
+
+    if (fetchErr || !savedProduct) {
+      console.warn('Supabase fetch saved product error:', fetchErr?.message);
+      return { ...product, id: savedProductId };
+    }
+
+    return rowToProduct(savedProduct);
   } catch (err) {
     console.warn('Supabase save product failed:', err);
+    return null;
+  }
+}
+
+export async function deleteProductFromSupabase(productId: string): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const { error } = await supabase
+      .from('products')
+      .delete()
+      .eq('id', productId);
+
+    if (error) {
+      console.warn('Supabase delete product error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase delete product failed:', err);
+    return false;
+  }
+}
+
+// ==========================================
+// PRODUCT SIZES (Tamanhos de Produtos)
+// ==========================================
+
+export interface ProductSize {
+  id: string;
+  productId: string;
+  sizeName: string;
+  sizeOrder: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchProductSizes(productId: string): Promise<ProductSize[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase
+      .from('product_sizes')
+      .select('*')
+      .eq('product_id', productId)
+      .eq('active', true)
+      .order('size_order', { ascending: true });
+
+    if (error) {
+      console.warn('Supabase fetch product sizes error:', error.message);
+      return null;
+    }
+
+    return (data || []).map((s: any) => ({
+      id: s.id,
+      productId: s.product_id,
+      sizeName: s.size_name,
+      sizeOrder: s.size_order,
+      active: s.active,
+      createdAt: s.created_at,
+      updatedAt: s.updated_at
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch product sizes failed:', err);
+    return null;
+  }
+}
+
+export async function addProductSize(
+  productId: string,
+  sizeName: string,
+  sizeOrder: number = 0
+): Promise<ProductSize | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase
+      .from('product_sizes')
+      .insert({
+        product_id: productId,
+        size_name: sizeName,
+        size_order: sizeOrder,
+        active: true
+      })
+      .select();
+
+    if (error) {
+      console.warn('Supabase add product size error:', error.message);
+      return null;
+    }
+
+    if (!data || data.length === 0) return null;
+
+    const s = data[0];
+    return {
+      id: s.id,
+      productId: s.product_id,
+      sizeName: s.size_name,
+      sizeOrder: s.size_order,
+      active: s.active,
+      createdAt: s.created_at,
+      updatedAt: s.updated_at
+    };
+  } catch (err) {
+    console.warn('Supabase add product size failed:', err);
+    return null;
+  }
+}
+
+export async function updateProductSize(
+  sizeId: string,
+  sizeName?: string,
+  sizeOrder?: number,
+  active?: boolean
+): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const updates: any = { updated_at: new Date().toISOString() };
+    if (sizeName !== undefined) updates.size_name = sizeName;
+    if (sizeOrder !== undefined) updates.size_order = sizeOrder;
+    if (active !== undefined) updates.active = active;
+
+    const { error } = await supabase
+      .from('product_sizes')
+      .update(updates)
+      .eq('id', sizeId);
+
+    if (error) {
+      console.warn('Supabase update product size error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase update product size failed:', err);
+    return false;
+  }
+}
+
+export async function deleteProductSize(sizeId: string): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const { error } = await supabase
+      .from('product_sizes')
+      .delete()
+      .eq('id', sizeId);
+
+    if (error) {
+      console.warn('Supabase delete product size error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase delete product size failed:', err);
+    return false;
+  }
+}
+
+export async function saveProductSizesToSupabase(productId: string, sizeNames: string[]): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const normalizedSizes = Array.from(new Set(sizeNames.map((size) => size.trim()).filter(Boolean)));
+
+    if (normalizedSizes.length === 0) {
+      const { error } = await supabase.from('product_sizes').delete().eq('product_id', productId);
+      if (error) {
+        console.warn('Supabase clear product sizes error:', error.message);
+        return false;
+      }
+      return true;
+    }
+
+    const { error: deleteErr } = await supabase
+      .from('product_sizes')
+      .delete()
+      .eq('product_id', productId)
+      .not('size_name', 'in', `(${normalizedSizes.map((s) => `"${s.replace(/"/g, '\\"')}"`).join(',')})`);
+
+    if (deleteErr) {
+      console.warn('Supabase delete stale product sizes error:', deleteErr.message);
+      return false;
+    }
+
+    const rows = normalizedSizes.map((sizeName, index) => ({
+      product_id: productId,
+      size_name: sizeName,
+      size_order: index + 1,
+      active: true,
+      updated_at: new Date().toISOString()
+    }));
+
+    const { error } = await supabase
+      .from('product_sizes')
+      .upsert(rows, { onConflict: 'product_id,size_name' });
+
+    if (error) {
+      console.warn('Supabase upsert product sizes error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase save product sizes failed:', err);
     return false;
   }
 }
@@ -242,7 +510,7 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
   try {
     const { data: salesData, error } = await supabase
       .from('sales')
-      .select('*, sale_items(*), payments(*)');
+      .select('*, sale_items(*, sale_item_components(*)), payments(*)');
 
     if (error) {
       console.warn('Supabase fetch sales error:', error.message);
@@ -282,7 +550,17 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
         status: si.status,
         batchId: si.batch_id,
         batchCode: si.batch_code,
-        deliveryId: si.delivery_id
+        deliveryId: si.delivery_id,
+        components: (si.sale_item_components || []).map((component: any) => ({
+          id: component.id,
+          productId: component.product_id,
+          productName: component.product_name,
+          variantId: component.variant_id,
+          size: component.size,
+          quantity: Number(component.quantity || 0),
+          unitPrice: Number(component.unit_price || 0),
+          status: component.status
+        }))
       })),
       payments: (s.payments || []).map((p: any) => ({
         id: p.id,
@@ -304,7 +582,9 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
 export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
   if (!isSupabaseConfigured) return false;
   try {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sale.id);
+    const isUuidValue = (value?: string) =>
+      Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
+    const isUuid = isUuidValue(sale.id);
     const saleRow: any = {
       code: sale.code,
       member_id: sale.memberId,
@@ -334,21 +614,68 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
 
     if (sale.items && sale.items.length > 0) {
       const itemRows = sale.items.map((si) => {
-        const itemIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(si.id);
+        const itemIsUuid = isUuidValue(si.id);
         const ir: any = {
           sale_id: savedSaleId,
           is_kit: si.isKit || false,
+          kit_id: isUuidValue(si.kitId) ? si.kitId : null,
+          product_id: isUuidValue(si.productId) ? si.productId : null,
           product_name: si.productName,
+          variant_id: isUuidValue(si.variantId) ? si.variantId : null,
           size: si.size,
           quantity: si.quantity,
           unit_price: si.unitPrice,
           total_price: si.totalPrice,
-          status: si.status
+          status: si.status,
+          batch_id: isUuidValue(si.batchId) ? si.batchId : null,
+          batch_code: si.batchCode || null,
+          delivery_id: isUuidValue(si.deliveryId) ? si.deliveryId : null
         };
         if (itemIsUuid) ir.id = si.id;
         return ir;
       });
-      await supabase.from('sale_items').upsert(itemRows);
+
+      const { data: savedItems, error: itemError } = await supabase
+        .from('sale_items')
+        .upsert(itemRows)
+        .select('id, product_name, size');
+
+      if (itemError) {
+        console.warn('Supabase upsert sale items error:', itemError.message);
+        return false;
+      }
+
+      const savedItemIds = (savedItems || []).map((item: any) => item.id);
+      if (savedItemIds.length > 0) {
+        await supabase.from('sale_item_components').delete().in('sale_item_id', savedItemIds);
+      }
+
+      const savedItemsByKey = new Map(
+        (savedItems || []).map((item: any) => [`${item.product_name}-${item.size}`, item.id])
+      );
+      const componentRows = sale.items.flatMap((si) => {
+        const saleItemId = isUuidValue(si.id) ? si.id : savedItemsByKey.get(`${si.productName}-${si.size}`);
+        if (!saleItemId) return [];
+
+        return (si.components || []).map((component) => ({
+          sale_item_id: saleItemId,
+          product_id: isUuidValue(component.productId) ? component.productId : null,
+          product_name: component.productName,
+          variant_id: isUuidValue(component.variantId) ? component.variantId : null,
+          size: component.size,
+          quantity: component.quantity,
+          unit_price: component.unitPrice,
+          status: component.status
+        }));
+      });
+
+      if (componentRows.length > 0) {
+        const { error: componentError } = await supabase.from('sale_item_components').insert(componentRows);
+        if (componentError) {
+          console.warn('Supabase insert sale item components error:', componentError.message);
+          return false;
+        }
+      }
     }
 
     if (sale.payments && sale.payments.length > 0) {

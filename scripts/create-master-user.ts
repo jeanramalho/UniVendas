@@ -28,7 +28,7 @@ async function main() {
     throw listError;
   }
 
-  const existingAuthUser = existingUsers.users.find((item) => item.email?.toLowerCase() === masterEmail.toLowerCase());
+  const existingAuthUser = existingUsers.users.find((item: any) => item.email?.toLowerCase() === masterEmail.toLowerCase());
 
   let authUserId = existingAuthUser?.id;
 

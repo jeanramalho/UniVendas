@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Member,
   Product,
@@ -16,14 +16,11 @@ import {
   UserCheck,
   Plus,
   Trash2,
-  DollarSign,
-  CheckCircle2,
-  AlertTriangle,
-  ArrowRight,
-  User,
-  ShieldAlert
+  CheckCircle2
 } from 'lucide-react';
 import { logAuditEvent } from '../lib/audit';
+
+const createId = () => crypto.randomUUID();
 
 interface NewSaleViewProps {
   members: Member[];
@@ -48,7 +45,11 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
   const [cartItems, setCartItems] = useState<SaleItem[]>([]);
 
   // Item selector state
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(products[0] || null);
+  const availableProducts = useMemo(
+    () => products.filter((product) => product.active !== false && product.variants.length > 0),
+    [products]
+  );
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [selectedVariantId, setSelectedVariantId] = useState<string>('');
   const [itemQty, setItemQty] = useState(1);
 
@@ -62,6 +63,27 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
   const [paidAmount, setPaidAmount] = useState<number>(0);
   const [saleNotes, setSaleNotes] = useState('');
   const [saleCompleted, setSaleCompleted] = useState<Sale | null>(null);
+
+  const selectedProduct = availableProducts.find((product) => product.id === selectedProductId) || null;
+
+  useEffect(() => {
+    if (!selectedProductId && availableProducts.length > 0) {
+      setSelectedProductId(availableProducts[0].id);
+      setSelectedVariantId(availableProducts[0].variants[0]?.id || '');
+      return;
+    }
+
+    const currentProduct = availableProducts.find((product) => product.id === selectedProductId);
+    if (!currentProduct) {
+      setSelectedProductId(availableProducts[0]?.id || '');
+      setSelectedVariantId(availableProducts[0]?.variants[0]?.id || '');
+      return;
+    }
+
+    if (!currentProduct.variants.some((variant) => variant.id === selectedVariantId)) {
+      setSelectedVariantId(currentProduct.variants[0]?.id || '');
+    }
+  }, [availableProducts, selectedProductId, selectedVariantId]);
 
   // Filter members search dropdown
   const filteredMembers = memberSearch.trim()
@@ -82,10 +104,15 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
     if (!variant) return;
 
     const availableStock = Math.max(0, variant.physicalStock - variant.reservedStock);
+    if (!selectedProduct.allowSaleWithoutStock && availableStock < itemQty) {
+      alert('Este produto não permite venda sem estoque.');
+      return;
+    }
+
     const itemStatus: SaleItemStatus = availableStock >= itemQty ? 'reservado' : 'pedido_a_fazer';
 
     const newItem: SaleItem = {
-      id: `si-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: createId(),
       saleId: '',
       isKit: false,
       productId: selectedProduct.id,
@@ -99,13 +126,14 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
     };
 
     setCartItems([...cartItems, newItem]);
+    setItemQty(1);
   };
 
   const handleAddKitToCart = () => {
     if (!selectedKit) return;
 
     const newItem: SaleItem = {
-      id: `si-kit-${Date.now()}`,
+      id: createId(),
       saleId: '',
       isKit: true,
       kitId: selectedKit.id,
@@ -117,18 +145,19 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
       status: 'pedido_a_fazer', // Kit components calculated individually
       components: selectedKit.items.map((ki) => {
         const p = products.find((pr) => pr.id === ki.productId);
-        const chosenSize = kitComponentSizes[ki.id] || 'Adulto M';
+        const chosenSize = kitComponentSizes[ki.id] || p?.variants[0]?.size || '';
         const variant = p?.variants.find((v) => v.size === chosenSize) || p?.variants[0];
+        const availableStock = Math.max(0, (variant?.physicalStock || 0) - (variant?.reservedStock || 0));
 
         return {
-          id: `sic-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: createId(),
           productId: ki.productId,
           productName: ki.productName,
           variantId: variant?.id || '',
           size: chosenSize,
           quantity: ki.quantity,
           unitPrice: p?.basePrice || 45.0,
-          status: 'pedido_a_fazer'
+          status: availableStock >= ki.quantity ? 'reservado' : 'pedido_a_fazer'
         };
       })
     };
@@ -166,14 +195,15 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
 
     const saleCode = `V-${new Date().getFullYear().toString().slice(-2)}${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(Math.floor(Math.random() * 8999) + 1000)}`;
 
+    const saleId = createId();
     const newSale: Sale = {
-      id: `sale-${Date.now()}`,
+      id: saleId,
       code: saleCode,
       memberId: selectedMember.id,
       memberName: selectedMember.name,
       memberUnit: selectedMember.unit,
       memberPhone: selectedMember.cellphone,
-      items: cartItems.map((i) => ({ ...i, saleId: `sale-${Date.now()}` })),
+      items: cartItems.map((i) => ({ ...i, saleId })),
       subtotal,
       discount,
       addition: 0,
@@ -186,8 +216,8 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
         paidAmount > 0
           ? [
               {
-                id: `pay-${Date.now()}`,
-                saleId: `sale-${Date.now()}`,
+                id: createId(),
+                saleId,
                 amount: paidAmount,
                 method: paymentMethod,
                 status: paymentStatus,
@@ -361,21 +391,21 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
             </h3>
 
             {/* Individual Product Selector */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs bg-[#111111] p-3.5 rounded-xl border border-[#222222] items-end">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs bg-[#111111] p-3.5 rounded-xl border border-[#222222] items-end">
               <div>
                 <label className="block text-gray-400 mb-1 font-semibold">Produto</label>
                 <select
-                  value={selectedProduct?.id || ''}
+                  value={selectedProductId}
                   onChange={(e) => {
                     const p = products.find((pr) => pr.id === e.target.value);
                     if (p) {
-                      setSelectedProduct(p);
+                      setSelectedProductId(p.id);
                       setSelectedVariantId(p.variants[0]?.id || '');
                     }
                   }}
                   className="w-full bg-[#1a1a1a] border border-[#333333] rounded px-3 py-2 text-white focus:outline-none"
                 >
-                  {products.map((p) => (
+                  {availableProducts.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name} (R$ {p.basePrice.toFixed(2)})
                     </option>
@@ -402,10 +432,21 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
               </div>
 
               <div>
+                <label className="block text-gray-400 mb-1 font-semibold">Quantidade</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={itemQty}
+                  onChange={(e) => setItemQty(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-full bg-[#1a1a1a] border border-[#333333] rounded px-3 py-2 text-white focus:outline-none font-bold"
+                />
+              </div>
+
+              <div>
                 <button
                   type="button"
                   onClick={handleAddProductToCart}
-                  disabled={!selectedMember}
+                  disabled={!selectedMember || !selectedProduct || !selectedVariantId}
                   className="w-full bg-[#F97316] hover:bg-orange-400 text-black font-bold py-2 rounded transition text-xs disabled:opacity-40"
                 >
                   + Adicionar Peça
@@ -467,7 +508,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
                           >
                             {p?.variants.map((v) => (
                               <option key={v.id} value={v.size}>
-                                {v.size}
+                                {v.size} - {Math.max(0, v.physicalStock - v.reservedStock) > 0 ? `${Math.max(0, v.physicalStock - v.reservedStock)} em estoque` : 'Sem estoque (A Pedir)'}
                               </option>
                             ))}
                           </select>
