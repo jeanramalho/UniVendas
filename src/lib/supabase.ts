@@ -2,13 +2,14 @@ import { createClient } from '@supabase/supabase-js';
 
 const metaEnv = (import.meta as any).env || {};
 const supabaseUrl = metaEnv.VITE_SUPABASE_URL || 'https://dtszbdcljnfxffualwah.supabase.co';
-const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || '';
+const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY || '';
 
 // Initialize client if credentials are non-placeholder
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
   supabaseAnonKey &&
   supabaseAnonKey !== 'your-supabase-anon-key' &&
+  supabaseAnonKey !== 'your-supabase-publishable-key' &&
   !supabaseAnonKey.includes('your-')
 );
 

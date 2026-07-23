@@ -40,6 +40,7 @@ import {
 import {
   Member,
   Product,
+  ProductCategory,
   Kit,
   Sale,
   PurchaseBatch,
@@ -51,7 +52,6 @@ import {
   MemberDuplicateCase,
   AppSettings
 } from './types';
-import { loadLocalData, saveLocalData } from './lib/supabase';
 import {
   fetchMembersFromSupabase,
   saveMembersToSupabase,
@@ -60,31 +60,34 @@ import {
   fetchProductsFromSupabase,
   saveProductToSupabase,
   fetchSalesFromSupabase,
-  saveSaleToSupabase
+  saveSaleToSupabase,
+  fetchCategoriesFromSupabase,
+  saveCategoriesToSupabase,
+  fetchAppSettingsFromSupabase,
+  saveAppSettingsToSupabase,
+  fetchKitsFromSupabase,
+  saveKitToSupabase,
+  fetchPurchaseBatchesFromSupabase,
+  savePurchaseBatchToSupabase,
+  saveUserToSupabase,
+  fetchProfilesFromSupabase
 } from './lib/supabaseDb';
-import { getAuditLogs } from './lib/audit';
+import { getAuditLogs, logAuditEvent } from './lib/audit';
 
 const AppContent: React.FC = () => {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, logout, authLoading } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
 
-  // App State with local storage persistence
-  const [settings, setSettings] = useState<AppSettings>(() =>
-    loadLocalData('univendas_settings', INITIAL_SETTINGS)
-  );
-  const [members, setMembers] = useState<Member[]>(() =>
-    loadLocalData('univendas_members', INITIAL_MEMBERS)
-  );
-  const [products, setProducts] = useState<Product[]>(() =>
-    loadLocalData('univendas_products', INITIAL_PRODUCTS)
-  );
-  const [kits, setKits] = useState<Kit[]>(() => loadLocalData('univendas_kits', INITIAL_KITS));
-  const [sales, setSales] = useState<Sale[]>(() => loadLocalData('univendas_sales', INITIAL_SALES));
-  const [batches, setBatches] = useState<PurchaseBatch[]>(() =>
-    loadLocalData('univendas_batches', INITIAL_BATCHES)
-  );
-  const [users, setUsers] = useState<User[]>(() => loadLocalData('univendas_users', INITIAL_USERS));
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => getAuditLogs());
+  const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
+  const [members, setMembers] = useState<Member[]>(INITIAL_MEMBERS);
+  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  const [categories, setCategories] = useState<ProductCategory[]>(INITIAL_CATEGORIES);
+  const [kits, setKits] = useState<Kit[]>(INITIAL_KITS);
+  const [sales, setSales] = useState<Sale[]>(INITIAL_SALES);
+  const [batches, setBatches] = useState<PurchaseBatch[]>(INITIAL_BATCHES);
+  const [users, setUsers] = useState<User[]>(INITIAL_USERS);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [dataReady, setDataReady] = useState(false);
 
   // Navigation State
   const [selectedBatch, setSelectedBatch] = useState<PurchaseBatch | null>(null);
@@ -95,32 +98,62 @@ const AppContent: React.FC = () => {
   // Load initial data from Supabase if configured
   useEffect(() => {
     async function loadSupabaseData() {
-      const dbMembers = await fetchMembersFromSupabase();
-      if (dbMembers && dbMembers.length > 0) {
-        setMembers(dbMembers);
+      const [dbSettings, dbCategories, dbMembers, dbProducts, dbKits, dbSales, dbBatches, dbAuditLogs] =
+        await Promise.all([
+          fetchAppSettingsFromSupabase(),
+          fetchCategoriesFromSupabase(),
+          fetchMembersFromSupabase(),
+          fetchProductsFromSupabase(),
+          fetchKitsFromSupabase(),
+          fetchSalesFromSupabase(),
+          fetchPurchaseBatchesFromSupabase(),
+          getAuditLogs()
+        ]);
+      const dbUsers = await fetchProfilesFromSupabase();
+
+      if (dbSettings) {
+        setSettings(dbSettings);
+      } else {
+        void saveAppSettingsToSupabase(INITIAL_SETTINGS);
       }
 
-      const dbProducts = await fetchProductsFromSupabase();
-      if (dbProducts && dbProducts.length > 0) {
-        setProducts(dbProducts);
+      if (dbCategories && dbCategories.length > 0) {
+        setCategories(dbCategories);
+      } else {
+        void saveCategoriesToSupabase(INITIAL_CATEGORIES);
       }
 
-      const dbSales = await fetchSalesFromSupabase();
-      if (dbSales && dbSales.length > 0) {
-        setSales(dbSales);
+      if (dbMembers) setMembers(dbMembers);
+      if (dbProducts) setProducts(dbProducts);
+      if (dbKits) setKits(dbKits);
+      if (dbSales) setSales(dbSales);
+      if (dbBatches) setBatches(dbBatches);
+      setAuditLogs(dbAuditLogs);
+
+      if (dbUsers && dbUsers.length > 0) {
+        setUsers(dbUsers);
+      } else {
+        setUsers([]);
       }
+
+      setDataReady(true);
     }
     loadSupabaseData();
   }, []);
 
-  // Sync State to storage
-  useEffect(() => saveLocalData('univendas_settings', settings), [settings]);
-  useEffect(() => saveLocalData('univendas_members', members), [members]);
-  useEffect(() => saveLocalData('univendas_products', products), [products]);
-  useEffect(() => saveLocalData('univendas_kits', kits), [kits]);
-  useEffect(() => saveLocalData('univendas_sales', sales), [sales]);
-  useEffect(() => saveLocalData('univendas_batches', batches), [batches]);
-  useEffect(() => saveLocalData('univendas_users', users), [users]);
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0d] text-gray-100 flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-[#111111] border border-[#2e2e2e] rounded-2xl p-6 text-center space-y-3">
+          <div className="text-[#F97316] font-black uppercase tracking-[0.2em] text-xs">UniVendas</div>
+          <h1 className="text-xl font-bold text-white">Validando sessão no Supabase</h1>
+          <p className="text-sm text-gray-400">
+            Carregando a autenticação e o perfil administrativo antes de liberar o sistema.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated || !user) {
     return <LoginView settings={settings} />;
@@ -129,22 +162,26 @@ const AppContent: React.FC = () => {
   // --- Handlers ---
   const handleAddMember = (m: Member) => {
     setMembers((prev) => [m, ...prev]);
-    saveSingleMemberToSupabase(m);
+    void saveSingleMemberToSupabase(m);
   };
 
   const handleUpdateMember = (m: Member) => {
     setMembers((prev) => prev.map((x) => (x.id === m.id ? m : x)));
-    saveSingleMemberToSupabase(m);
+    void saveSingleMemberToSupabase(m);
   };
 
   const handleDeleteMember = (id: string) => {
     setMembers((prev) => prev.filter((x) => x.id !== id));
-    deleteMemberFromSupabase(id);
+    void deleteMemberFromSupabase(id);
   };
 
-  const handleImportMembers = (newMembers: Member[]) => {
+  const handleImportMembers = async (newMembers: Member[]) => {
     setMembers((prev) => [...newMembers, ...prev]);
-    saveMembersToSupabase(newMembers);
+    const ok = await saveMembersToSupabase(newMembers);
+    if (!ok) {
+      return false;
+    }
+    return true;
   };
 
   const handleResolveDuplicate = (
@@ -160,19 +197,22 @@ const AppContent: React.FC = () => {
 
   const handleAddProduct = (p: Product) => {
     setProducts((prev) => [p, ...prev]);
-    saveProductToSupabase(p);
+    void saveProductToSupabase(p);
   };
 
   const handleUpdateProduct = (p: Product) => {
     setProducts((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-    saveProductToSupabase(p);
+    void saveProductToSupabase(p);
   };
 
-  const handleAddKit = (k: Kit) => setKits([k, ...kits]);
+  const handleAddKit = (k: Kit) => {
+    setKits([k, ...kits]);
+    void saveKitToSupabase(k);
+  };
 
   const handleCompleteSale = (newSale: Sale) => {
     setSales((prev) => [newSale, ...prev]);
-    saveSaleToSupabase(newSale);
+    void saveSaleToSupabase(newSale);
 
     // Reserve or update product stocks
     setProducts((prev) =>
@@ -189,7 +229,7 @@ const AppContent: React.FC = () => {
             return v;
           })
         };
-        saveProductToSupabase(updatedProd);
+        void saveProductToSupabase(updatedProd);
         return updatedProd;
       })
     );
@@ -199,12 +239,14 @@ const AppContent: React.FC = () => {
     setSales(
       sales.map((s) => {
         if (s.id === saleId) {
-          return {
+          const updatedSale = {
             ...s,
             overallStatus: 'cancelada',
             cancellationReason: reason,
             cancelledAt: new Date().toISOString()
           };
+          void saveSaleToSupabase(updatedSale);
+          return updatedSale;
         }
         return s;
       })
@@ -261,6 +303,7 @@ const AppContent: React.FC = () => {
 
   const handleSaveConference = (updatedBatch: PurchaseBatch) => {
     setBatches(batches.map((b) => (b.id === updatedBatch.id ? updatedBatch : b)));
+    void savePurchaseBatchToSupabase(updatedBatch);
   };
 
   const handleConfirmDelivery = (record: DeliveryRecord) => {
@@ -277,11 +320,13 @@ const AppContent: React.FC = () => {
           });
 
           const allDelivered = updatedItems.every((i) => i.status === 'entregue');
-          return {
+          const updatedSale = {
             ...s,
             items: updatedItems,
             overallStatus: allDelivered ? 'entregue' : s.overallStatus
           };
+          void saveSaleToSupabase(updatedSale);
+          return updatedSale;
         }
         return s;
       })
@@ -292,8 +337,14 @@ const AppContent: React.FC = () => {
     // Stock auto addition if item is new
   };
 
-  const handleAddUser = (u: User) => setUsers([u, ...users]);
-  const handleUpdateUser = (u: User) => setUsers(users.map((x) => (x.id === u.id ? u : x)));
+  const handleAddUser = (u: User) => {
+    setUsers([u, ...users]);
+    void saveUserToSupabase(u);
+  };
+  const handleUpdateUser = (u: User) => {
+    setUsers(users.map((x) => (x.id === u.id ? u : x)));
+    void saveUserToSupabase(u);
+  };
 
   const handleClearAllData = () => {
     if (
@@ -303,15 +354,11 @@ const AppContent: React.FC = () => {
     ) {
       setMembers([]);
       setProducts([]);
+      setCategories([]);
       setKits([]);
       setSales([]);
       setBatches([]);
       setDuplicateCases([]);
-      localStorage.removeItem('univendas_members');
-      localStorage.removeItem('univendas_products');
-      localStorage.removeItem('univendas_kits');
-      localStorage.removeItem('univendas_sales');
-      localStorage.removeItem('univendas_batches');
     }
   };
 
@@ -381,7 +428,7 @@ const AppContent: React.FC = () => {
         return (
           <ProductsView
             products={products}
-            categories={INITIAL_CATEGORIES}
+            categories={categories}
             referenceSizes={INITIAL_SETTINGS.referenceSizes}
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
@@ -499,6 +546,20 @@ const AppContent: React.FC = () => {
     .filter((i) => i.status === 'comprado_recebido' || i.status === 'em_estoque_reservado').length;
 
   const openBatchesCount = batches.filter((b) => b.status !== 'concluido' && b.status !== 'cancelado').length;
+
+  if (!dataReady) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0d] text-gray-100 flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-[#111111] border border-[#2e2e2e] rounded-2xl p-6 text-center space-y-3">
+          <div className="text-[#F97316] font-black uppercase tracking-[0.2em] text-xs">UniVendas</div>
+          <h1 className="text-xl font-bold text-white">Carregando dados reais do Supabase</h1>
+          <p className="text-sm text-gray-400">
+            Aguarde enquanto o sistema busca membros, produtos, vendas, lotes e configurações no banco.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-gray-100 font-sans flex flex-col">

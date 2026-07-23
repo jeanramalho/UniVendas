@@ -1,6 +1,7 @@
 import { AuditLog } from '../types';
 import { STORAGE_KEYS, loadLocalData, saveLocalData } from './supabase';
 import { INITIAL_AUDIT_LOGS } from '../data/initialData';
+import { fetchAuditLogsFromSupabase, saveAuditLogToSupabase } from './supabaseDb';
 
 export function logAuditEvent(
   userId: string,
@@ -33,9 +34,16 @@ export function logAuditEvent(
 
   const updatedLogs = [newLog, ...logs];
   saveLocalData(STORAGE_KEYS.AUDIT_LOGS, updatedLogs);
+  void saveAuditLogToSupabase(newLog);
   return newLog;
 }
 
-export function getAuditLogs(): AuditLog[] {
+export async function getAuditLogs(): Promise<AuditLog[]> {
+  const dbLogs = await fetchAuditLogsFromSupabase();
+  if (dbLogs && dbLogs.length > 0) {
+    saveLocalData(STORAGE_KEYS.AUDIT_LOGS, dbLogs);
+    return dbLogs;
+  }
+
   return loadLocalData<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, INITIAL_AUDIT_LOGS);
 }

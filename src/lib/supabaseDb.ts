@@ -1,5 +1,14 @@
 import { supabase, isSupabaseConfigured } from './supabase';
-import { Member, Product, Sale, PurchaseBatch, UserProfile } from '../types';
+import {
+  AuditLog,
+  AppSettings,
+  Kit,
+  Member,
+  Product,
+  ProductCategory,
+  PurchaseBatch,
+  UserProfile
+} from '../types';
 
 // ==========================================
 // MEMBERS (Membros)
@@ -372,17 +381,16 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
 export async function saveUserToSupabase(user: UserProfile): Promise<boolean> {
   if (!isSupabaseConfigured) return false;
   try {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user.id);
     const uRow: any = {
+      id: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
       active: user.active,
       must_change_password: user.mustChangePassword
     };
-    if (isUuid) uRow.id = user.id;
 
-    const { error } = await supabase.from('profiles').upsert(uRow, { onConflict: 'email' });
+    const { error } = await supabase.from('profiles').upsert(uRow, { onConflict: 'id' });
     if (error) {
       console.warn('Supabase upsert profile error:', error.message);
       return false;
@@ -390,6 +398,444 @@ export async function saveUserToSupabase(user: UserProfile): Promise<boolean> {
     return true;
   } catch (err) {
     console.warn('Supabase save user failed:', err);
+    return false;
+  }
+}
+
+export async function fetchProfileByEmailFromSupabase(email: string): Promise<UserProfile | null> {
+  if (!isSupabaseConfigured || !email) return null;
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .ilike('email', email.trim())
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Supabase fetch profile by email error:', error.message);
+      return null;
+    }
+
+    if (!data) return null;
+
+    return {
+      id: data.id,
+      email: data.email,
+      name: data.name,
+      role: data.role,
+      active: data.active !== false,
+      mustChangePassword: data.must_change_password !== false,
+      createdAt: data.created_at || new Date().toISOString(),
+      lastLoginAt: data.last_login_at || undefined
+    };
+  } catch (err) {
+    console.warn('Supabase fetch profile by email failed:', err);
+    return null;
+  }
+}
+
+export async function fetchProfileByIdFromSupabase(id: string): Promise<UserProfile | null> {
+  if (!isSupabaseConfigured || !id) return null;
+  try {
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', id).maybeSingle();
+
+    if (error) {
+      console.warn('Supabase fetch profile by id error:', error.message);
+      return null;
+    }
+
+    if (!data) return null;
+
+    return {
+      id: data.id,
+      email: data.email,
+      name: data.name,
+      role: data.role,
+      active: data.active !== false,
+      mustChangePassword: data.must_change_password !== false,
+      createdAt: data.created_at || new Date().toISOString(),
+      lastLoginAt: data.last_login_at || undefined
+    };
+  } catch (err) {
+    console.warn('Supabase fetch profile by id failed:', err);
+    return null;
+  }
+}
+
+export async function fetchProfilesFromSupabase(): Promise<UserProfile[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase.from('profiles').select('*').order('created_at', { ascending: true });
+    if (error) {
+      console.warn('Supabase fetch profiles error:', error.message);
+      return null;
+    }
+
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      role: row.role,
+      active: row.active !== false,
+      mustChangePassword: row.must_change_password !== false,
+      createdAt: row.created_at || new Date().toISOString(),
+      lastLoginAt: row.last_login_at || undefined
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch profiles failed:', err);
+    return null;
+  }
+}
+
+// ==========================================
+// CATEGORIES, SETTINGS, KITS, BATCHES, AUDIT
+// ==========================================
+
+export async function fetchCategoriesFromSupabase(): Promise<ProductCategory[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase.from('product_categories').select('*').order('name', { ascending: true });
+    if (error) {
+      console.warn('Supabase fetch categories error:', error.message);
+      return null;
+    }
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description || '',
+      active: row.active !== false
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch categories failed:', err);
+    return null;
+  }
+}
+
+export async function saveCategoriesToSupabase(categories: ProductCategory[]): Promise<boolean> {
+  if (!isSupabaseConfigured || categories.length === 0) return false;
+  try {
+    const rows = categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      description: category.description || null,
+      active: category.active
+    }));
+    const { error } = await supabase.from('product_categories').upsert(rows, { onConflict: 'name' });
+    if (error) {
+      console.warn('Supabase save categories error:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Supabase save categories failed:', err);
+    return false;
+  }
+}
+
+export async function fetchAppSettingsFromSupabase(): Promise<AppSettings | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase.from('app_settings').select('*').eq('id', 1).maybeSingle();
+    if (error) {
+      console.warn('Supabase fetch settings error:', error.message);
+      return null;
+    }
+    if (!data) return null;
+    return {
+      clubLogoUrl: data.club_logo_url || '',
+      desbravadoresLogoUrl: data.desbravadores_logo_url || '',
+      clubName: data.club_name || 'Clube de Desbravadores Pioneiros da Colina',
+      seasonYear: data.season_year || '2026',
+      allowSaleWithoutStock: data.allow_sale_without_stock !== false,
+      autoReserveOnReceipt: data.auto_reserve_on_receipt !== false,
+      minStockAlert: data.min_stock_alert ?? 5,
+      referenceSizes: Array.isArray(data.reference_sizes) ? data.reference_sizes : []
+    };
+  } catch (err) {
+    console.warn('Supabase fetch settings failed:', err);
+    return null;
+  }
+}
+
+export async function saveAppSettingsToSupabase(settings: AppSettings): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const row = {
+      id: 1,
+      club_logo_url: settings.clubLogoUrl || null,
+      desbravadores_logo_url: settings.desbravadoresLogoUrl || null,
+      club_name: settings.clubName,
+      season_year: settings.seasonYear,
+      allow_sale_without_stock: settings.allowSaleWithoutStock,
+      auto_reserve_on_receipt: settings.autoReserveOnReceipt,
+      min_stock_alert: settings.minStockAlert,
+      reference_sizes: settings.referenceSizes
+    };
+    const { error } = await supabase.from('app_settings').upsert(row, { onConflict: 'id' });
+    if (error) {
+      console.warn('Supabase save settings error:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Supabase save settings failed:', err);
+    return false;
+  }
+}
+
+export async function fetchKitsFromSupabase(): Promise<Kit[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase.from('kits').select('*, kit_items(*)').order('created_at', { ascending: false });
+    if (error) {
+      console.warn('Supabase fetch kits error:', error.message);
+      return null;
+    }
+    return (data || []).map((kit: any) => ({
+      id: kit.id,
+      code: kit.code,
+      name: kit.name,
+      description: kit.description || '',
+      price: Number(kit.price || 0),
+      originalPrice: Number(kit.original_price || 0),
+      discount: Number(kit.discount || 0),
+      items: (kit.kit_items || []).map((item: any) => ({
+        id: item.id,
+        productId: item.product_id,
+        productName: item.product_name || '',
+        quantity: Number(item.quantity || 1),
+        required: item.required !== false,
+        allowedSizes: item.allowed_sizes || []
+      })),
+      active: kit.active !== false,
+      createdAt: kit.created_at || new Date().toISOString()
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch kits failed:', err);
+    return null;
+  }
+}
+
+export async function saveKitToSupabase(kit: Kit): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const kitRow = {
+      id: kit.id,
+      code: kit.code,
+      name: kit.name,
+      description: kit.description || null,
+      price: kit.price,
+      original_price: kit.originalPrice,
+      discount: kit.discount,
+      active: kit.active
+    };
+
+    const { data, error } = await supabase.from('kits').upsert(kitRow, { onConflict: 'code' }).select('id');
+    if (error || !data || data.length === 0) {
+      console.warn('Supabase save kit error:', error?.message);
+      return false;
+    }
+
+    const savedKitId = data[0].id;
+    await supabase.from('kit_items').delete().eq('kit_id', savedKitId);
+
+    if (kit.items.length > 0) {
+      const itemRows = kit.items.map((item) => ({
+        kit_id: savedKitId,
+        product_id: item.productId,
+        quantity: item.quantity,
+        required: item.required,
+        allowed_sizes: item.allowedSizes || []
+      }));
+      const { error: itemsError } = await supabase.from('kit_items').insert(itemRows);
+      if (itemsError) {
+        console.warn('Supabase save kit items error:', itemsError.message);
+        return false;
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase save kit failed:', err);
+    return false;
+  }
+}
+
+export async function fetchPurchaseBatchesFromSupabase(): Promise<PurchaseBatch[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase
+      .from('purchase_batches')
+      .select('*, purchase_batch_items(*)')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.warn('Supabase fetch batches error:', error.message);
+      return null;
+    }
+
+    return (data || []).map((batch: any) => ({
+      id: batch.id,
+      code: batch.code,
+      supplierName: batch.supplier_name,
+      supplierContact: batch.supplier_contact || '',
+      externalOrderNumber: batch.external_order_number || '',
+      status: batch.status,
+      totalItems: Number(batch.total_items || 0),
+      estimatedCost: Number(batch.estimated_cost || 0),
+      realCost: batch.real_cost !== null && batch.real_cost !== undefined ? Number(batch.real_cost) : undefined,
+      shippingCost: batch.shipping_cost !== null && batch.shipping_cost !== undefined ? Number(batch.shipping_cost) : undefined,
+      sentAt: batch.sent_at || '',
+      expectedDeliveryDate: batch.expected_delivery_date || '',
+      receivedAt: batch.received_at || '',
+      notes: batch.notes || '',
+      createdBy: batch.created_by || '',
+      createdAt: batch.created_at || new Date().toISOString(),
+      updatedAt: batch.updated_at || new Date().toISOString(),
+      items: (batch.purchase_batch_items || []).map((item: any) => ({
+        id: item.id,
+        batchId: item.batch_id,
+        saleItemId: item.sale_item_id,
+        saleCode: item.sale_code,
+        memberId: item.member_id,
+        memberName: item.member_name,
+        memberUnit: item.member_unit,
+        productId: item.product_id,
+        productName: item.product_name,
+        variantId: item.variant_id || '',
+        size: item.size,
+        quantityRequested: Number(item.quantity_requested || 0),
+        quantityReceived: Number(item.quantity_received || 0),
+        quantityMissing: Number(item.quantity_missing || 0),
+        quantitySurplus: Number(item.quantity_surplus || 0),
+        quantityDamaged: Number(item.quantity_damaged || 0),
+        unitCost: Number(item.unit_cost || 0),
+        status: item.status
+      }))
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch batches failed:', err);
+    return null;
+  }
+}
+
+export async function savePurchaseBatchToSupabase(batch: PurchaseBatch): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const row = {
+      id: batch.id,
+      code: batch.code,
+      supplier_name: batch.supplierName,
+      supplier_contact: batch.supplierContact || null,
+      external_order_number: batch.externalOrderNumber || null,
+      status: batch.status,
+      total_items: batch.totalItems,
+      estimated_cost: batch.estimatedCost,
+      real_cost: batch.realCost ?? null,
+      shipping_cost: batch.shippingCost ?? null,
+      sent_at: batch.sentAt || null,
+      expected_delivery_date: batch.expectedDeliveryDate || null,
+      received_at: batch.receivedAt || null,
+      notes: batch.notes || null,
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase.from('purchase_batches').upsert(row, { onConflict: 'code' }).select('id');
+    if (error || !data || data.length === 0) {
+      console.warn('Supabase save batch error:', error?.message);
+      return false;
+    }
+
+    const savedBatchId = data[0].id;
+    await supabase.from('purchase_batch_items').delete().eq('batch_id', savedBatchId);
+
+    if (batch.items.length > 0) {
+      const itemRows = batch.items.map((item) => ({
+        batch_id: savedBatchId,
+        sale_item_id: item.saleItemId,
+        sale_code: item.saleCode,
+        member_id: item.memberId,
+        member_name: item.memberName,
+        member_unit: item.memberUnit,
+        product_id: item.productId,
+        product_name: item.productName,
+        variant_id: item.variantId || null,
+        size: item.size,
+        quantity_requested: item.quantityRequested,
+        quantity_received: item.quantityReceived,
+        quantity_missing: item.quantityMissing,
+        quantity_surplus: item.quantitySurplus,
+        quantity_damaged: item.quantityDamaged,
+        unit_cost: item.unitCost,
+        status: item.status
+      }));
+      const { error: itemsError } = await supabase.from('purchase_batch_items').insert(itemRows);
+      if (itemsError) {
+        console.warn('Supabase save batch items error:', itemsError.message);
+        return false;
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase save batch failed:', err);
+    return false;
+  }
+}
+
+export async function fetchAuditLogsFromSupabase(): Promise<AuditLog[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase.from('audit_logs').select('*').order('created_at', { ascending: false });
+    if (error) {
+      console.warn('Supabase fetch audit logs error:', error.message);
+      return null;
+    }
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      userId: row.user_id || '',
+      userName: row.user_name,
+      action: row.action,
+      resource: row.resource,
+      resourceId: row.resource_id || '',
+      details: row.details || '',
+      oldValues: row.old_values || undefined,
+      newValues: row.new_values || undefined,
+      justification: row.justification || '',
+      createdAt: row.created_at || new Date().toISOString(),
+      ipAddress: row.ip_address || ''
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch audit logs failed:', err);
+    return null;
+  }
+}
+
+export async function saveAuditLogToSupabase(log: AuditLog): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const row = {
+      id: log.id,
+      user_id: log.userId,
+      user_name: log.userName,
+      action: log.action,
+      resource: log.resource,
+      resource_id: log.resourceId || null,
+      details: log.details || null,
+      old_values: log.oldValues || null,
+      new_values: log.newValues || null,
+      justification: log.justification || null,
+      ip_address: log.ipAddress || null,
+      created_at: log.createdAt
+    };
+    const { error } = await supabase.from('audit_logs').insert(row);
+    if (error) {
+      console.warn('Supabase save audit log error:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Supabase save audit log failed:', err);
     return false;
   }
 }

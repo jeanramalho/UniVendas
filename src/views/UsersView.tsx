@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { User, UserRole } from '../types';
 import { Users, UserPlus, Shield, Lock, Key, CheckCircle2, X } from 'lucide-react';
 import { logAuditEvent } from '../lib/audit';
+import { supabase } from '../lib/supabase';
 
 interface UsersViewProps {
   users: User[];
@@ -19,15 +20,48 @@ export const UsersView: React.FC<UsersViewProps> = ({
   const [isCreating, setIsCreating] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<UserRole>('operador');
+  const [role, setRole] = useState<UserRole>('operator');
   const [tempPassword, setTempPassword] = useState('Senha123!');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  const handleCreate = (e: React.FormEvent) => {
+  const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  };
+
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !email) return;
 
+    setErrorMsg('');
+
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password: tempPassword,
+      options: {
+        data: {
+          name,
+          role
+        }
+      }
+    });
+
+    if (error) {
+      setErrorMsg(error.message || 'Não foi possível criar o usuário no Supabase Auth.');
+      return;
+    }
+
+    const authUserId = data.user?.id;
+
     const newUser: User = {
-      id: `usr-${Date.now()}`,
+      id: authUserId || generateUUID(),
       name,
       email,
       role,
@@ -48,6 +82,7 @@ export const UsersView: React.FC<UsersViewProps> = ({
     setIsCreating(false);
     setName('');
     setEmail('');
+    setTempPassword('Senha123!');
   };
 
   return (
@@ -166,6 +201,12 @@ export const UsersView: React.FC<UsersViewProps> = ({
               />
             </div>
 
+            {errorMsg && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-[11px] rounded-lg p-3">
+                {errorMsg}
+              </div>
+            )}
+
             <div>
               <label className="block text-xs font-semibold text-gray-300 mb-1">Perfil de Acesso *</label>
               <select
@@ -173,7 +214,7 @@ export const UsersView: React.FC<UsersViewProps> = ({
                 onChange={(e) => setRole(e.target.value as any)}
                 className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none"
               >
-                <option value="operador">Operador de Vendas (Balcão)</option>
+                <option value="operator">Operador de Vendas (Balcão)</option>
                 <option value="admin">Administrador do Clube</option>
                 <option value="master">Master (Acesso Total)</option>
               </select>

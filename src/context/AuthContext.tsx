@@ -1,13 +1,19 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { UserProfile, UserRole } from '../types';
-import { STORAGE_KEYS, loadLocalData, saveLocalData } from '../lib/supabase';
-import { INITIAL_USERS } from '../data/initialData';
+import { supabase, isSupabaseConfigured, STORAGE_KEYS, loadLocalData, saveLocalData } from '../lib/supabase';
+import {
+  fetchProfileByEmailFromSupabase,
+  fetchProfileByIdFromSupabase,
+  fetchProfilesFromSupabase,
+  saveUserToSupabase
+} from '../lib/supabaseDb';
 import { logAuditEvent } from '../lib/audit';
 
 interface AuthContextType {
   user: UserProfile | null;
   usersList: UserProfile[];
   isAuthenticated: boolean;
+  authLoading: boolean;
   login: (email: string, pass: string) => Promise<{ success: boolean; mustChangePassword?: boolean; message?: string }>;
   logout: () => void;
   changePassword: (newPassword: string) => Promise<boolean>;
@@ -20,63 +26,128 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [usersList, setUsersList] = useState<UserProfile[]>(() =>
-    loadLocalData<UserProfile[]>(STORAGE_KEYS.USERS, INITIAL_USERS)
-  );
+  const [usersList, setUsersList] = useState<UserProfile[]>([]);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  const [user, setUser] = useState<UserProfile | null>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return null;
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      const cachedUsers = loadLocalData<UserProfile[]>(STORAGE_KEYS.USERS, []);
+      const cachedCurrentUser = loadLocalData<UserProfile | null>(STORAGE_KEYS.CURRENT_USER, null);
+      setUsersList(cachedUsers);
+      setUser(cachedCurrentUser);
+      setAuthLoading(false);
+      return;
+    }
+
+    let mounted = true;
+
+    const loadSession = async () => {
+      const [{ data: sessionData }, profiles] = await Promise.all([
+        supabase.auth.getSession(),
+        fetchProfilesFromSupabase()
+      ]);
+
+      if (!mounted) return;
+
+      if (profiles) {
+        setUsersList(profiles);
       }
-    }
-    return null;
-  });
 
-  useEffect(() => {
-    saveLocalData(STORAGE_KEYS.USERS, usersList);
-  }, [usersList]);
+      const sessionUser = sessionData.session?.user;
+      if (sessionUser) {
+        const profile =
+          (profiles || []).find((item) => item.id === sessionUser.id) ||
+          (await fetchProfileByIdFromSupabase(sessionUser.id)) ||
+          (await fetchProfileByEmailFromSupabase(sessionUser.email || ''));
 
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-    }
-  }, [user]);
+        if (profile && profile.active !== false) {
+          setUser(profile);
+        } else {
+          setUser(null);
+        }
+      }
+
+      setAuthLoading(false);
+    };
+
+    void loadSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mounted) return;
+
+      if (!session?.user) {
+        setUser(null);
+        setAuthLoading(false);
+        return;
+      }
+
+      const profile =
+        (await fetchProfileByIdFromSupabase(session.user.id)) ||
+        (await fetchProfileByEmailFromSupabase(session.user.email || ''));
+
+      if (profile && profile.active !== false) {
+        setUser(profile);
+        const profiles = await fetchProfilesFromSupabase();
+        if (profiles) {
+          setUsersList(profiles);
+        }
+      } else {
+        setUser(null);
+      }
+
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
 
   const isAuthenticated = Boolean(user);
 
   const login = async (email: string, pass: string) => {
-    const found = usersList.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
-    if (!found) {
-      return { success: false, message: 'Usuário não encontrado. Verifique o e-mail informado.' };
+    if (!isSupabaseConfigured) {
+      return { success: false, message: 'Supabase não está configurado no projeto.' };
     }
 
-    if (!found.active) {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password: pass
+    });
+
+    if (error || !data.session?.user) {
+      return { success: false, message: error?.message || 'Falha ao autenticar no Supabase.' };
+    }
+
+    const authUser = data.session.user;
+    const profile =
+      (await fetchProfileByIdFromSupabase(authUser.id)) ||
+      (await fetchProfileByEmailFromSupabase(authUser.email || ''));
+
+    if (!profile) {
+      return { success: false, message: 'Perfil administrativo não encontrado para o usuário autenticado.' };
+    }
+
+    if (!profile.active) {
+      await supabase.auth.signOut();
       return { success: false, message: 'Usuário desativado. Entre em contato com o Usuário Mestre.' };
     }
 
-    const expectedPassword = found.password || 'pioneirosdacolina2026';
-
-    if (pass !== expectedPassword) {
-      return { success: false, message: 'Senha incorreta. Verifique a senha digitada.' };
-    }
-
-    const updatedUser: UserProfile = { ...found, lastLoginAt: new Date().toISOString() };
-
-    const updatedUsersList = usersList.map((u) => (u.id === found.id ? updatedUser : u));
-    setUsersList(updatedUsersList);
+    const updatedUser: UserProfile = { ...profile, lastLoginAt: new Date().toISOString() };
     setUser(updatedUser);
+    setUsersList((prev) => {
+      const exists = prev.some((item) => item.id === updatedUser.id);
+      return exists ? prev.map((item) => (item.id === updatedUser.id ? updatedUser : item)) : [updatedUser, ...prev];
+    });
 
-    logAuditEvent(found.id, found.name, 'LOGIN_SISTEMA', 'auth', 'Login efetuado com sucesso');
+    void saveUserToSupabase(updatedUser);
+    logAuditEvent(updatedUser.id, updatedUser.name, 'LOGIN_SISTEMA', 'auth', 'Login efetuado com sucesso');
 
     return {
       success: true,
-      mustChangePassword: Boolean(found.mustChangePassword)
+      mustChangePassword: Boolean(updatedUser.mustChangePassword)
     };
   };
 
@@ -84,15 +155,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (user) {
       logAuditEvent(user.id, user.name, 'LOGOUT_SISTEMA', 'auth', 'Logout do sistema realizado');
     }
+    void supabase.auth.signOut();
     setUser(null);
   };
 
   const changePassword = async (newPassword: string) => {
-    if (!user) return false;
+    if (!user || !isSupabaseConfigured) return false;
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      return false;
+    }
 
     const updatedCurrentUser: UserProfile = {
       ...user,
-      password: newPassword,
       mustChangePassword: false
     };
 
@@ -105,8 +181,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setUsersList(updatedUsers);
     setUser(updatedCurrentUser);
+    void saveUserToSupabase(updatedCurrentUser);
     saveLocalData(STORAGE_KEYS.USERS, updatedUsers);
-    localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(updatedCurrentUser));
 
     logAuditEvent(user.id, user.name, 'TROCA_SENHA', 'auth', 'Senha alterada com sucesso');
     return true;
@@ -114,13 +190,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const createUser = async (newUser: Omit<UserProfile, 'id' | 'createdAt'>) => {
     if (!user) return false;
+    const generatedId = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `00000000-0000-4000-8000-${Date.now().toString().padStart(12, '0').slice(-12)}`;
     const created: UserProfile = {
       ...newUser,
-      id: `usr-${Date.now()}`,
+      id: generatedId,
       createdAt: new Date().toISOString()
     };
     const nextList = [...usersList, created];
     setUsersList(nextList);
+    void saveUserToSupabase(created);
     logAuditEvent(user.id, user.name, 'CRIAR_USUARIO', 'users', `Novo usuário criado: ${created.name} (${created.role})`, {
       resourceId: created.id
     });
@@ -172,6 +252,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         usersList,
         isAuthenticated,
+        authLoading,
         login,
         logout,
         changePassword,

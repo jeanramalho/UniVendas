@@ -6,7 +6,7 @@ import { logAuditEvent } from '../lib/audit';
 
 interface MemberImportViewProps {
   existingMembers: Member[];
-  onConfirmImport: (newMembers: Member[], duplicates: MemberDuplicateCase[]) => void;
+  onConfirmImport: (newMembers: Member[], duplicates: MemberDuplicateCase[]) => Promise<boolean> | boolean;
   userName: string;
 }
 
@@ -50,7 +50,7 @@ export const MemberImportView: React.FC<MemberImportViewProps> = ({
     });
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!parseResult) return;
 
     const newMembersToInsert: Member[] = parseResult.validRows.map((vr) => ({
@@ -60,16 +60,25 @@ export const MemberImportView: React.FC<MemberImportViewProps> = ({
       updatedAt: new Date().toISOString()
     }));
 
-    onConfirmImport(newMembersToInsert, parseResult.duplicateCases);
-    logAuditEvent(
+    try {
+      const saved = await onConfirmImport(newMembersToInsert, parseResult.duplicateCases);
+      if (!saved) {
+        setErrorMsg('A importação foi processada, mas não foi possível gravar os dados no Supabase.');
+        return;
+      }
+
+      logAuditEvent(
       'usr-current',
       userName,
       'IMPORTAR_PLANILHA_MEMBROS',
       'members',
       `Importados ${newMembersToInsert.length} membros da planilha ${parseResult.fileName}`
-    );
+      );
 
-    setImportedSuccess(true);
+      setImportedSuccess(true);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Erro ao gravar os membros no Supabase.');
+    }
   };
 
   return (
