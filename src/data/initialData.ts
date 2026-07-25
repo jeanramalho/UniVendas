@@ -11,10 +11,15 @@ import {
   UserProfile,
   MemberDuplicateCase
 } from '../types';
+import clubLogoUrl from '../../assets/Logo/logo-PC.png';
+import desbravadoresLogoUrl from '../../assets/Logo/logo-DBV.png';
+
+export const CLUB_LOGO_URL = clubLogoUrl;
+export const DESBRAVADORES_LOGO_URL = desbravadoresLogoUrl;
 
 export const INITIAL_SETTINGS: AppSettings = {
-  clubLogoUrl: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=300&auto=format&fit=crop&q=80', // Default fallback asset
-  desbravadoresLogoUrl: 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=300&auto=format&fit=crop&q=80',
+  clubLogoUrl: CLUB_LOGO_URL,
+  desbravadoresLogoUrl: DESBRAVADORES_LOGO_URL,
   clubName: 'Clube de Desbravadores Pioneiros da Colina',
   seasonYear: '2026',
   allowSaleWithoutStock: true,

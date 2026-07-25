@@ -28,6 +28,8 @@ import { SettingsView } from './views/SettingsView';
 
 // Data & Helpers
 import {
+  CLUB_LOGO_URL,
+  DESBRAVADORES_LOGO_URL,
   INITIAL_MEMBERS,
   INITIAL_PRODUCTS,
   INITIAL_CATEGORIES,
@@ -43,6 +45,7 @@ import {
   ProductCategory,
   Kit,
   Sale,
+  Payment,
   PurchaseBatch,
   PurchaseBatchItem,
   User,
@@ -76,6 +79,18 @@ import {
 } from './lib/supabaseDb';
 import { getAuditLogs, logAuditEvent } from './lib/audit';
 
+const normalizeSettingsLogos = (settings: AppSettings): AppSettings => {
+  const isPlaceholderLogo = (value: string) => !value || value.includes('images.unsplash.com');
+
+  return {
+    ...settings,
+    clubLogoUrl: isPlaceholderLogo(settings.clubLogoUrl) ? CLUB_LOGO_URL : settings.clubLogoUrl,
+    desbravadoresLogoUrl: isPlaceholderLogo(settings.desbravadoresLogoUrl)
+      ? DESBRAVADORES_LOGO_URL
+      : settings.desbravadoresLogoUrl
+  };
+};
+
 const AppContent: React.FC = () => {
   const { user, isAuthenticated, logout, authLoading } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -96,6 +111,7 @@ const AppContent: React.FC = () => {
   const [conferencingBatch, setConferencingBatch] = useState<PurchaseBatch | null>(null);
   const [duplicateCases, setDuplicateCases] = useState<MemberDuplicateCase[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Load initial data from Supabase if configured
   useEffect(() => {
@@ -114,7 +130,14 @@ const AppContent: React.FC = () => {
       const dbUsers = await fetchProfilesFromSupabase();
 
       if (dbSettings) {
-        setSettings(dbSettings);
+        const normalizedSettings = normalizeSettingsLogos(dbSettings);
+        setSettings(normalizedSettings);
+        if (
+          normalizedSettings.clubLogoUrl !== dbSettings.clubLogoUrl ||
+          normalizedSettings.desbravadoresLogoUrl !== dbSettings.desbravadoresLogoUrl
+        ) {
+          void saveAppSettingsToSupabase(normalizedSettings);
+        }
       } else {
         void saveAppSettingsToSupabase(INITIAL_SETTINGS);
       }
@@ -274,6 +297,70 @@ const AppContent: React.FC = () => {
         return updatedProd;
       })
     );
+  };
+
+  const reserveSaleStock = (sale: Sale) => {
+    setProducts((prev) =>
+      prev.map((p) => {
+        const itemsInSale = sale.items.filter((i) => i.productId === p.id && i.status === 'reservado');
+        if (itemsInSale.length === 0) return p;
+
+        const updatedProd = {
+          ...p,
+          variants: p.variants.map((v) => {
+            const reservedQuantity = itemsInSale
+              .filter((item) => item.variantId === v.id)
+              .reduce((total, item) => total + item.quantity, 0);
+
+            return reservedQuantity > 0
+              ? { ...v, reservedStock: v.reservedStock + reservedQuantity }
+              : v;
+          })
+        };
+        void saveProductToSupabase(updatedProd);
+        return updatedProd;
+      })
+    );
+  };
+
+  const handleAddPayment = (saleId: string, payment: Payment) => {
+    const now = new Date().toISOString();
+    let paidSale: Sale | null = null;
+
+    setSales((prev) =>
+      prev.map((s) => {
+        if (s.id !== saleId) return s;
+
+        const paidAmount = Math.min(s.totalAmount, s.paidAmount + payment.amount);
+        const pendingAmount = Math.max(0, s.totalAmount - paidAmount);
+        const paymentStatus = pendingAmount <= 0 ? 'pago' : 'parcialmente_pago';
+        const hasMissingStock = s.items.some((i) => i.status === 'pedido_a_fazer');
+        const overallStatus =
+          paymentStatus === 'pago'
+            ? hasMissingStock
+              ? 'aguardando_pedido'
+              : 'parcialmente_disponivel'
+            : s.overallStatus;
+
+        const updatedSale: Sale = {
+          ...s,
+          paidAmount,
+          pendingAmount,
+          paymentStatus,
+          overallStatus,
+          payments: [...s.payments, { ...payment, saleId, status: paymentStatus }],
+          updatedAt: now
+        };
+
+        paidSale = updatedSale;
+        void saveSaleToSupabase(updatedSale);
+        return updatedSale;
+      })
+    );
+
+    if (paidSale?.paymentStatus === 'pago') {
+      reserveSaleStock(paidSale);
+    }
   };
 
   const handleCancelSale = (saleId: string, reason: string) => {
@@ -523,7 +610,7 @@ const AppContent: React.FC = () => {
           <SalesListView
             sales={sales}
             onCancelSale={handleCancelSale}
-            onAddPayment={() => {}}
+            onAddPayment={handleAddPayment}
             userName={user.name}
           />
         );
@@ -637,27 +724,58 @@ const AppContent: React.FC = () => {
         settings={settings}
         onOpenSettings={() => setActiveTab('settings')}
         activeTabTitle={getTabTitle(activeTab)}
+        onOpenMenu={() => setMobileSidebarOpen(true)}
       />
 
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar
-          activeTab={activeTab}
-          onSelectTab={(tab) => {
-            setSelectedBatch(null);
-            setConferencingBatch(null);
-            setActiveTab(tab);
-          }}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-          badgeCounts={{
-            pendingOrders: pendingOrdersCount,
-            duplicates: duplicateCases.length,
-            pendingDeliveries: pendingDeliveriesCount,
-            openBatches: openBatchesCount
-          }}
-        />
+        <div className="hidden md:flex">
+          <Sidebar
+            activeTab={activeTab}
+            onSelectTab={(tab) => {
+              setSelectedBatch(null);
+              setConferencingBatch(null);
+              setActiveTab(tab);
+            }}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+            badgeCounts={{
+              pendingOrders: pendingOrdersCount,
+              duplicates: duplicateCases.length,
+              pendingDeliveries: pendingDeliveriesCount,
+              openBatches: openBatchesCount
+            }}
+          />
+        </div>
 
-        <main className="flex-1 p-6 overflow-y-auto max-w-7xl mx-auto w-full">
+        {mobileSidebarOpen && (
+          <div className="fixed inset-0 z-50 md:hidden">
+            <button
+              type="button"
+              aria-label="Fechar menu"
+              onClick={() => setMobileSidebarOpen(false)}
+              className="absolute inset-0 bg-black/70"
+            />
+            <div className="relative h-full w-[82vw] max-w-80 shadow-2xl">
+              <Sidebar
+                activeTab={activeTab}
+                onSelectTab={(tab) => {
+                  setSelectedBatch(null);
+                  setConferencingBatch(null);
+                  setActiveTab(tab);
+                  setMobileSidebarOpen(false);
+                }}
+                badgeCounts={{
+                  pendingOrders: pendingOrdersCount,
+                  duplicates: duplicateCases.length,
+                  pendingDeliveries: pendingDeliveriesCount,
+                  openBatches: openBatchesCount
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        <main className="flex-1 p-3 sm:p-4 lg:p-6 overflow-y-auto max-w-7xl mx-auto w-full min-w-0">
           {renderView()}
         </main>
       </div>

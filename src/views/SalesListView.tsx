@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Sale, Payment } from '../types';
+import { Payment, PaymentMethod, Sale } from '../types';
 import { ListOrdered, Search, Filter, Eye, DollarSign, FileSpreadsheet, X, Ban, Printer } from 'lucide-react';
 import { exportSalesToExcel } from '../lib/excelExport';
+import { currencyInputValue, formatCurrency, normalizeCurrencyInput, parseCurrencyInput } from '../lib/currency';
 
 interface SalesListViewProps {
   sales: Sale[];
@@ -22,7 +23,10 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
   // Modals
   const [viewingSale, setViewingSale] = useState<Sale | null>(null);
   const [cancelModalSale, setCancelModalSale] = useState<Sale | null>(null);
+  const [paymentModalSale, setPaymentModalSale] = useState<Sale | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
+  const [paymentAmount, setPaymentAmount] = useState('');
 
   const filtered = sales.filter((s) => {
     if (selectedStatus !== 'all' && s.overallStatus !== selectedStatus) return false;
@@ -51,6 +55,37 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
     onCancelSale(cancelModalSale.id, cancelReason);
     setCancelModalSale(null);
     setCancelReason('');
+  };
+
+  const openPaymentModal = (sale: Sale) => {
+    setPaymentModalSale(sale);
+    setPaymentMethod('PIX');
+    setPaymentAmount(currencyInputValue(sale.pendingAmount || sale.totalAmount - sale.paidAmount));
+  };
+
+  const handleConfirmPayment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentModalSale) return;
+
+    const amount = Math.min(
+      parseCurrencyInput(paymentAmount),
+      paymentModalSale.pendingAmount || paymentModalSale.totalAmount - paymentModalSale.paidAmount
+    );
+    if (amount <= 0) return;
+
+    onAddPayment(paymentModalSale.id, {
+      id: crypto.randomUUID(),
+      saleId: paymentModalSale.id,
+      amount,
+      method: paymentMethod,
+      status: 'pago',
+      paidAt: new Date().toISOString(),
+      registeredBy: userName,
+      createdAt: new Date().toISOString()
+    });
+
+    setPaymentModalSale(null);
+    setPaymentAmount('');
   };
 
   return (
@@ -133,9 +168,9 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                   </td>
                   <td className="p-3 font-semibold text-white">{s.memberName}</td>
                   <td className="p-3 text-gray-400">{s.memberUnit}</td>
-                  <td className="p-3 font-bold text-white">R$ {s.totalAmount.toFixed(2)}</td>
+                  <td className="p-3 font-bold text-white">R$ {formatCurrency(s.totalAmount)}</td>
                   <td className="p-3 font-mono text-emerald-400 font-bold">
-                    R$ {s.paidAmount.toFixed(2)}
+                    R$ {formatCurrency(s.paidAmount)}
                   </td>
                   <td className="p-3">
                     <span
@@ -163,6 +198,15 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                     >
                       <Eye className="w-3.5 h-3.5" />
                     </button>
+                    {s.overallStatus !== 'cancelada' && s.paymentStatus !== 'pago' && (
+                      <button
+                        onClick={() => openPaymentModal(s)}
+                        className="p-1.5 hover:bg-gray-800 text-gray-300 hover:text-emerald-400 rounded"
+                        title="Marcar venda como paga"
+                      >
+                        <DollarSign className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {s.overallStatus !== 'cancelada' && (
                       <button
                         onClick={() => setCancelModalSale(s)}
@@ -217,11 +261,11 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
               </div>
               <div>
                 <span className="text-gray-500 block">Valor Total:</span>
-                <span className="font-bold text-[#F97316]">R$ {viewingSale.totalAmount.toFixed(2)}</span>
+                <span className="font-bold text-[#F97316]">R$ {formatCurrency(viewingSale.totalAmount)}</span>
               </div>
               <div>
                 <span className="text-gray-500 block">Pago:</span>
-                <span className="font-bold text-emerald-400">R$ {viewingSale.paidAmount.toFixed(2)}</span>
+                <span className="font-bold text-emerald-400">R$ {formatCurrency(viewingSale.paidAmount)}</span>
               </div>
             </div>
 
@@ -243,7 +287,7 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="font-bold text-[#F97316]">R$ {it.totalPrice.toFixed(2)}</div>
+                      <div className="font-bold text-[#F97316]">R$ {formatCurrency(it.totalPrice)}</div>
                       <span className="text-[9px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded font-mono uppercase">
                         {it.status.replace('_', ' ')}
                       </span>
@@ -269,11 +313,93 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                       {p.paidAt ? new Date(p.paidAt).toLocaleDateString('pt-BR') : '-'} • Resp: {p.registeredBy}
                     </span>
                   </div>
-                  <span className="font-mono font-bold text-emerald-400">R$ {p.amount.toFixed(2)}</span>
+                  <span className="font-mono font-bold text-emerald-400">R$ {formatCurrency(p.amount)}</span>
                 </div>
               ))}
+              {viewingSale.payments.length === 0 && (
+                <div className="bg-[#111111] p-3 rounded-lg border border-[#222222] text-xs text-gray-500">
+                  Nenhum pagamento registrado.
+                </div>
+              )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Modal: Mark Sale Paid */}
+      {paymentModalSale && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <form
+            onSubmit={handleConfirmPayment}
+            className="bg-[#1a1a1a] border border-[#333333] rounded-2xl max-w-md w-full p-6 space-y-4"
+          >
+            <h3 className="text-base font-bold text-white border-b border-[#2e2e2e] pb-3">
+              Registrar Pagamento: {paymentModalSale.code}
+            </h3>
+
+            <div className="bg-[#111111] border border-[#222222] rounded-xl p-3 text-xs space-y-1">
+              <div className="flex justify-between text-gray-400">
+                <span>Total:</span>
+                <span className="text-white font-bold">R$ {formatCurrency(paymentModalSale.totalAmount)}</span>
+              </div>
+              <div className="flex justify-between text-gray-400">
+                <span>Já pago:</span>
+                <span className="text-emerald-400 font-bold">R$ {formatCurrency(paymentModalSale.paidAmount)}</span>
+              </div>
+              <div className="flex justify-between text-gray-400">
+                <span>Restante:</span>
+                <span className="text-[#F97316] font-bold">
+                  R$ {formatCurrency(paymentModalSale.pendingAmount)}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1">Forma de Pagamento</label>
+              <select
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-[#F97316]"
+              >
+                <option value="PIX">PIX</option>
+                <option value="Dinheiro">Dinheiro</option>
+                <option value="Cartão de crédito">Cartão de Crédito</option>
+                <option value="Cartão de débito">Cartão de Débito</option>
+                <option value="Transferência">Transferência Bancária</option>
+                <option value="Outro">Outro</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1">Valor Pago (R$)</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                required
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                onBlur={(e) => setPaymentAmount(normalizeCurrencyInput(e.target.value))}
+                placeholder="0,00"
+                className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="pt-3 border-t border-[#2e2e2e] flex items-center justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => setPaymentModalSale(null)}
+                className="px-4 py-2 bg-gray-800 text-gray-300 text-xs rounded hover:bg-gray-700"
+              >
+                Voltar
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-black font-bold text-xs rounded"
+              >
+                Confirmar Pagamento
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

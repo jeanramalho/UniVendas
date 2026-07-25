@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { LogOut, User, ShieldCheck, Database, RefreshCw } from 'lucide-react';
+import { LogOut, ShieldCheck, Database, Menu } from 'lucide-react';
 import { AppSettings } from '../../types';
 import { INITIAL_SETTINGS } from '../../data/initialData';
 
@@ -12,12 +12,14 @@ interface HeaderProps {
   userName?: string;
   userRole?: string;
   onLogout?: () => void;
+  onOpenMenu?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   settings = INITIAL_SETTINGS,
   onOpenSettings,
-  activeTabTitle
+  activeTabTitle,
+  onOpenMenu
 }) => {
   const { user, logout } = useAuth();
   const currentSettings = settings || INITIAL_SETTINGS;
@@ -26,7 +28,17 @@ export const Header: React.FC<HeaderProps> = ({
     <header className="bg-[#0a0a0a] text-white border-b border-zinc-800 px-4 py-3.5 sticky top-0 z-30 shadow-2xl">
       <div className="max-w-7xl mx-auto flex items-center justify-between">
         {/* Left branding */}
-        <div className="flex items-center space-x-3.5">
+        <div className="flex items-center space-x-3.5 min-w-0">
+          <button
+            type="button"
+            onClick={onOpenMenu}
+            className="md:hidden p-2 text-zinc-200 hover:bg-zinc-900 rounded border border-zinc-800"
+            title="Abrir menu"
+            aria-label="Abrir menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+
           <div className="flex items-center space-x-2">
             {currentSettings?.clubLogoUrl ? (
               <img
@@ -44,12 +56,12 @@ export const Header: React.FC<HeaderProps> = ({
             ) : null}
           </div>
 
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center space-x-2.5">
-              <h1 className="font-black text-lg tracking-tighter uppercase text-white leading-none">
+              <h1 className="font-black text-base sm:text-lg tracking-tighter uppercase text-white leading-none">
                 UNIVENDAS<span className="text-[#F97316]">.</span>
               </h1>
-              <span className="bg-[#F97316] text-black font-extrabold text-[9px] px-2 py-0.5 rounded uppercase tracking-[0.15em]">
+              <span className="hidden sm:inline bg-[#F97316] text-black font-extrabold text-[9px] px-2 py-0.5 rounded uppercase tracking-[0.15em] truncate max-w-40">
                 {currentSettings?.clubName || 'Pioneiros da Colina'}
               </span>
             </div>
@@ -60,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Right User Bar */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
           <button
             onClick={onOpenSettings}
             className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-bold px-3 py-1.5 rounded border border-zinc-700 transition tracking-wide"

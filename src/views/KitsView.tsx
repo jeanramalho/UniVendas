@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Kit, Product } from '../types';
 import { Box, Plus, Edit2, Layers, CheckCircle2, Tag } from 'lucide-react';
+import { currencyInputValue, formatCurrency, normalizeCurrencyInput, parseCurrencyInput } from '../lib/currency';
 
 interface KitsViewProps {
   kits: Kit[];
@@ -11,12 +12,13 @@ interface KitsViewProps {
 export const KitsView: React.FC<KitsViewProps> = ({ kits, products, onAddKit }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [kitName, setKitName] = useState('');
-  const [kitPrice, setKitPrice] = useState(260.0);
+  const [kitPriceInput, setKitPriceInput] = useState(currencyInputValue(260));
   const [kitDesc, setKitDesc] = useState('');
 
   const handleCreateKit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!kitName) return;
+    const kitPrice = parseCurrencyInput(kitPriceInput);
 
     const newKit: Kit = {
       id: `kit-${Date.now()}`,
@@ -37,6 +39,7 @@ export const KitsView: React.FC<KitsViewProps> = ({ kits, products, onAddKit }) 
     onAddKit(newKit);
     setIsCreating(false);
     setKitName('');
+    setKitPriceInput(currencyInputValue(260));
   };
 
   return (
@@ -74,7 +77,7 @@ export const KitsView: React.FC<KitsViewProps> = ({ kits, products, onAddKit }) 
                 {k.code}
               </span>
               <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md">
-                Desconto: R$ {k.discount.toFixed(2)}
+                Desconto: R$ {formatCurrency(k.discount)}
               </span>
             </div>
 
@@ -87,12 +90,12 @@ export const KitsView: React.FC<KitsViewProps> = ({ kits, products, onAddKit }) 
             <div className="bg-[#111111] p-3 rounded-xl border border-[#222222] flex items-center justify-between">
               <div>
                 <span className="text-[10px] text-gray-500 block">Preço Promocional do Kit</span>
-                <span className="text-xl font-black text-[#F97316]">R$ {k.price.toFixed(2)}</span>
+                <span className="text-xl font-black text-[#F97316]">R$ {formatCurrency(k.price)}</span>
               </div>
               <div className="text-right">
                 <span className="text-[10px] text-gray-500 block">Preço Separado</span>
                 <span className="text-xs text-gray-400 line-through font-mono">
-                  R$ {k.originalPrice.toFixed(2)}
+                  R$ {formatCurrency(k.originalPrice)}
                 </span>
               </div>
             </div>
@@ -144,11 +147,13 @@ export const KitsView: React.FC<KitsViewProps> = ({ kits, products, onAddKit }) 
                 Preço Promocional (R$) *
               </label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 required
-                value={kitPrice}
-                onChange={(e) => setKitPrice(parseFloat(e.target.value) || 0)}
+                value={kitPriceInput}
+                onChange={(e) => setKitPriceInput(e.target.value)}
+                onBlur={(e) => setKitPriceInput(normalizeCurrencyInput(e.target.value))}
+                placeholder="0,00"
                 className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-[#F97316]"
               />
             </div>

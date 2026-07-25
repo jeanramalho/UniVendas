@@ -3,6 +3,7 @@ import { Product, ProductCategory, ProductVariant } from '../types';
 import { ShoppingBag, Plus, Edit2, Layers, X, Trash2 } from 'lucide-react';
 import { fetchProductSizes, ProductSize } from '../lib/supabaseDb';
 import { ProductSizesManager } from '../components/ProductSizesManager';
+import { currencyInputValue, formatCurrency, normalizeCurrencyInput, parseCurrencyInput } from '../lib/currency';
 
 interface ProductsViewProps {
   products: Product[];
@@ -32,6 +33,8 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [customSizes, setCustomSizes] = useState<ProductSize[]>([]);
   const [loadingCustomSizes, setLoadingCustomSizes] = useState(false);
   const [variantStocks, setVariantStocks] = useState<Record<string, number>>({});
+  const [basePriceInput, setBasePriceInput] = useState(currencyInputValue(45));
+  const [costPriceInput, setCostPriceInput] = useState(currencyInputValue(28));
 
   // Form State
   const [formData, setFormData] = useState<Partial<Product>>({
@@ -105,12 +108,16 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     });
     setCustomSizes([]);
     setVariantStocks({});
+    setBasePriceInput(currencyInputValue(45));
+    setCostPriceInput(currencyInputValue(28));
     setIsCreating(true);
   };
 
   const openEditModal = async (p: Product) => {
     setEditingProduct(p);
     setFormData(p);
+    setBasePriceInput(currencyInputValue(p.basePrice));
+    setCostPriceInput(currencyInputValue(p.costPrice));
     setVariantStocks(
       p.variants.reduce<Record<string, number>>((acc, variant) => {
         acc[variant.size] = variant.physicalStock;
@@ -168,6 +175,8 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
     const baseProduct = {
       ...(formData as Product),
+      basePrice: parseCurrencyInput(basePriceInput),
+      costPrice: parseCurrencyInput(costPriceInput),
       categoryName: categoryObj?.name || formData.categoryName || 'Geral'
     };
     const variants = buildVariantsFromSizes(baseProduct, customSizes);
@@ -278,13 +287,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   <div>
                     <span className="text-[10px] text-gray-500 block">Preço de Venda</span>
                     <span className="text-base font-black text-white">
-                      R$ {p.basePrice.toFixed(2)}
+                      R$ {formatCurrency(p.basePrice)}
                     </span>
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] text-gray-500 block">Custo Estimado</span>
                     <span className="text-xs text-gray-400 font-mono">
-                      R$ {p.costPrice.toFixed(2)}
+                      R$ {formatCurrency(p.costPrice)}
                     </span>
                   </div>
                 </div>
@@ -406,11 +415,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
               <div>
                 <label className="block text-gray-300 mb-1 font-semibold">Preço de Venda (R$) *</label>
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
                   required
-                  value={formData.basePrice || 0}
-                  onChange={(e) => setFormData({ ...formData, basePrice: parseFloat(e.target.value) || 0 })}
+                  value={basePriceInput}
+                  onChange={(e) => setBasePriceInput(e.target.value)}
+                  onBlur={(e) => setBasePriceInput(normalizeCurrencyInput(e.target.value))}
+                  placeholder="0,00"
                   className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-1.5 text-white focus:outline-none focus:border-[#F97316]"
                 />
               </div>
@@ -418,11 +429,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
               <div>
                 <label className="block text-gray-300 mb-1 font-semibold">Custo de Compra (R$) *</label>
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
                   required
-                  value={formData.costPrice || 0}
-                  onChange={(e) => setFormData({ ...formData, costPrice: parseFloat(e.target.value) || 0 })}
+                  value={costPriceInput}
+                  onChange={(e) => setCostPriceInput(e.target.value)}
+                  onBlur={(e) => setCostPriceInput(normalizeCurrencyInput(e.target.value))}
+                  placeholder="0,00"
                   className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-1.5 text-white focus:outline-none focus:border-[#F97316]"
                 />
               </div>

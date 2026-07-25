@@ -19,6 +19,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { logAuditEvent } from '../lib/audit';
+import { formatCurrency, normalizeCurrencyInput, parseCurrencyInput } from '../lib/currency';
 
 const createId = () => crypto.randomUUID();
 
@@ -58,9 +59,9 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
   const [kitComponentSizes, setKitComponentSizes] = useState<Record<string, string>>({});
 
   // Payment State
-  const [discount, setDiscount] = useState(0);
+  const [discountInput, setDiscountInput] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
-  const [paidAmount, setPaidAmount] = useState<number>(0);
+  const [paidAmountInput, setPaidAmountInput] = useState('');
   const [saleNotes, setSaleNotes] = useState('');
   const [saleCompleted, setSaleCompleted] = useState<Sale | null>(null);
 
@@ -172,6 +173,8 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
 
   // Financial totals
   const subtotal = cartItems.reduce((acc, i) => acc + i.totalPrice, 0);
+  const discount = parseCurrencyInput(discountInput);
+  const paidAmount = parseCurrencyInput(paidAmountInput);
   const totalAmount = Math.max(0, subtotal - discount);
   const pendingAmount = Math.max(0, totalAmount - paidAmount);
 
@@ -239,7 +242,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
       userName,
       'CRIAR_VENDA',
       'sales',
-      `Venda ${saleCode} para ${selectedMember.name} no valor de R$ ${totalAmount.toFixed(2)}`
+      `Venda ${saleCode} para ${selectedMember.name} no valor de R$ ${formatCurrency(totalAmount)}`
     );
 
     setSaleCompleted(newSale);
@@ -248,8 +251,8 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
   const handleResetForm = () => {
     setSelectedMember(null);
     setCartItems([]);
-    setDiscount(0);
-    setPaidAmount(0);
+    setDiscountInput('');
+    setPaidAmountInput('');
     setMemberSearch('');
     setSaleCompleted(null);
   };
@@ -278,7 +281,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
           </div>
           <div className="flex justify-between">
             <span className="text-gray-400">Valor Total:</span>
-            <span className="font-bold text-[#F97316]">R$ {saleCompleted.totalAmount.toFixed(2)}</span>
+            <span className="font-bold text-[#F97316]">R$ {formatCurrency(saleCompleted.totalAmount)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-400">Status Pagamento:</span>
@@ -299,7 +302,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="bg-[#1a1a1a] border border-[#2e2e2e] p-4 rounded-xl flex items-center justify-between">
+      <div className="bg-[#1a1a1a] border border-[#2e2e2e] p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h2 className="text-xl font-bold text-white flex items-center space-x-2">
           <ShoppingCart className="w-5 h-5 text-[#F97316]" />
           <span>Nova Venda — Balcão do Clube</span>
@@ -339,7 +342,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
                           setSelectedMember(m);
                           setMemberSearch('');
                         }}
-                        className="p-3 hover:bg-[#F97316]/10 cursor-pointer transition flex items-center justify-between text-xs"
+                          className="p-3 hover:bg-[#F97316]/10 cursor-pointer transition flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
                       >
                         <div>
                           <div className="font-bold text-white">{m.name}</div>
@@ -357,8 +360,8 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
               </div>
             ) : (
               /* Selected Member Card */
-              <div className="bg-[#111111] border border-[#F97316]/40 p-4 rounded-xl flex items-center justify-between">
-                <div className="flex items-center space-x-3">
+              <div className="bg-[#111111] border border-[#F97316]/40 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center space-x-3 min-w-0">
                   <div className="p-3 bg-[#F97316]/20 text-[#F97316] rounded-xl font-bold font-mono">
                     {selectedMember.internalCode}
                   </div>
@@ -375,7 +378,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
 
                 <button
                   onClick={() => setSelectedMember(null)}
-                  className="text-xs text-gray-400 hover:text-red-400 px-2 py-1 rounded bg-gray-800"
+                  className="text-xs text-gray-400 hover:text-red-400 px-2 py-1 rounded bg-gray-800 self-start sm:self-auto shrink-0"
                 >
                   Trocar Membro
                 </button>
@@ -407,7 +410,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
                 >
                   {availableProducts.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} (R$ {p.basePrice.toFixed(2)})
+                      {p.name} (R$ {formatCurrency(p.basePrice)})
                     </option>
                   ))}
                 </select>
@@ -459,19 +462,19 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
               <span className="text-xs font-bold text-amber-400 block uppercase">
                 Ou Selecionar Kit Promocional Completo:
               </span>
-              <div className="flex items-center space-x-3">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <select
                   value={selectedKit?.id || ''}
                   onChange={(e) => {
                     const k = kits.find((kt) => kt.id === e.target.value);
                     setSelectedKit(k || null);
                   }}
-                  className="bg-[#1a1a1a] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none flex-1"
+                  className="bg-[#1a1a1a] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none flex-1 min-w-0"
                 >
                   <option value="">Selecione um kit...</option>
                   {kits.map((k) => (
                     <option key={k.id} value={k.id}>
-                      {k.name} (R$ {k.price.toFixed(2)})
+                      {k.name} (R$ {formatCurrency(k.price)})
                     </option>
                   ))}
                 </select>
@@ -562,7 +565,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
 
                     <div className="flex items-center space-x-3">
                       <span className="font-bold text-[#F97316]">
-                        R$ {item.totalPrice.toFixed(2)}
+                        R$ {formatCurrency(item.totalPrice)}
                       </span>
                       <button
                         onClick={() => handleRemoveCartItem(item.id)}
@@ -580,23 +583,25 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
             <div className="bg-[#111111] p-4 rounded-xl border border-[#222222] space-y-2 text-xs">
               <div className="flex justify-between text-gray-400">
                 <span>Subtotal:</span>
-                <span>R$ {subtotal.toFixed(2)}</span>
+                <span>R$ {formatCurrency(subtotal)}</span>
               </div>
 
               <div className="flex justify-between items-center text-gray-400">
                 <span>Desconto (R$):</span>
                 <input
-                  type="number"
-                  step="0.01"
-                  value={discount}
-                  onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                  type="text"
+                  inputMode="decimal"
+                  value={discountInput}
+                  onChange={(e) => setDiscountInput(e.target.value)}
+                  onBlur={(e) => setDiscountInput(normalizeCurrencyInput(e.target.value))}
+                  placeholder="0,00"
                   className="w-20 bg-[#1a1a1a] border border-[#333333] rounded px-2 py-0.5 text-right text-white font-mono"
                 />
               </div>
 
               <div className="flex justify-between font-bold text-sm text-white pt-2 border-t border-[#222222]">
                 <span>Total a Pagar:</span>
-                <span className="text-[#F97316]">R$ {totalAmount.toFixed(2)}</span>
+                <span className="text-[#F97316]">R$ {formatCurrency(totalAmount)}</span>
               </div>
             </div>
 
@@ -620,10 +625,12 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
               <div>
                 <label className="block text-gray-400 mb-1 font-semibold">Valor Efetivamente Pago (R$)</label>
                 <input
-                  type="number"
-                  step="0.01"
-                  value={paidAmount}
-                  onChange={(e) => setPaidAmount(parseFloat(e.target.value) || 0)}
+                  type="text"
+                  inputMode="decimal"
+                  value={paidAmountInput}
+                  onChange={(e) => setPaidAmountInput(e.target.value)}
+                  onBlur={(e) => setPaidAmountInput(normalizeCurrencyInput(e.target.value))}
+                  placeholder="0,00"
                   className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-white font-bold text-emerald-400 focus:outline-none"
                 />
               </div>
