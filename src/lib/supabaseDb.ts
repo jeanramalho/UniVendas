@@ -613,6 +613,20 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
     const savedSaleId = data[0].id;
 
     if (sale.items && sale.items.length > 0) {
+      const currentItemIds = sale.items.map((si) => si.id).filter(isUuidValue);
+      if (currentItemIds.length > 0) {
+        const { error: deleteStaleItemsError } = await supabase
+          .from('sale_items')
+          .delete()
+          .eq('sale_id', savedSaleId)
+          .not('id', 'in', `(${currentItemIds.map((id) => `"${id}"`).join(',')})`);
+
+        if (deleteStaleItemsError) {
+          console.warn('Supabase delete stale sale items error:', deleteStaleItemsError.message);
+          return false;
+        }
+      }
+
       const itemRows = sale.items.map((si) => {
         const itemIsUuid = isUuidValue(si.id);
         const ir: any = {

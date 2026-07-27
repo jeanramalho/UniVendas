@@ -267,59 +267,132 @@ const AppContent: React.FC = () => {
     void saveKitToSupabase(k);
   };
 
-  const handleCompleteSale = (newSale: Sale) => {
-    setSales((prev) => [newSale, ...prev]);
-    void saveSaleToSupabase(newSale);
+  const getSaleReservedStockMap = (sale: Sale) => {
+    const reservedByVariant = new Map<string, number>();
+    if (sale.paymentStatus !== 'pago') return reservedByVariant;
 
-    // Reserve or update product stocks
-    if (newSale.paymentStatus !== 'pago') return;
+    sale.items
+      .filter((item) => item.status === 'reservado' && item.variantId)
+      .forEach((item) => {
+        reservedByVariant.set(item.variantId!, (reservedByVariant.get(item.variantId!) || 0) + item.quantity);
+      });
+
+    return reservedByVariant;
+  };
+
+  const applySaleReservationDelta = (previousSale: Sale | null, nextSale: Sale) => {
+    const previousReserved = previousSale ? getSaleReservedStockMap(previousSale) : new Map<string, number>();
+    const nextReserved = getSaleReservedStockMap(nextSale);
+    const variantIds = new Set([...previousReserved.keys(), ...nextReserved.keys()]);
+
+    if (variantIds.size === 0) return;
 
     setProducts((prev) =>
       prev.map((p) => {
-        const itemsInSale = newSale.items.filter((i) => i.productId === p.id && i.status === 'reservado');
-        if (itemsInSale.length === 0) return p;
+        let changed = false;
 
         const updatedProd = {
           ...p,
           variants: p.variants.map((v) => {
-            const reservedQuantity = itemsInSale
-              .filter((item) => item.variantId === v.id)
-              .reduce((total, item) => total + item.quantity, 0);
+            if (!variantIds.has(v.id)) return v;
 
-            if (reservedQuantity > 0) {
-              return { ...v, reservedStock: v.reservedStock + reservedQuantity };
-            }
+            const delta = (nextReserved.get(v.id) || 0) - (previousReserved.get(v.id) || 0);
+            if (delta === 0) return v;
 
-            return v;
+            changed = true;
+            return { ...v, reservedStock: Math.max(0, v.reservedStock + delta) };
           })
         };
+
+        if (!changed) return p;
         void saveProductToSupabase(updatedProd);
         return updatedProd;
       })
     );
   };
 
+  const saleHasDelivery = (sale: Sale) =>
+    sale.overallStatus === 'entregue' ||
+    sale.items.some((item) => item.status === 'entregue' || Boolean(item.deliveryId));
+
+  const handleCompleteSale = (newSale: Sale) => {
+    setSales((prev) => [newSale, ...prev]);
+    void saveSaleToSupabase(newSale);
+    applySaleReservationDelta(null, newSale);
+  };
+
   const reserveSaleStock = (sale: Sale) => {
-    setProducts((prev) =>
-      prev.map((p) => {
-        const itemsInSale = sale.items.filter((i) => i.productId === p.id && i.status === 'reservado');
-        if (itemsInSale.length === 0) return p;
+    applySaleReservationDelta(null, sale);
+  };
 
-        const updatedProd = {
-          ...p,
-          variants: p.variants.map((v) => {
-            const reservedQuantity = itemsInSale
-              .filter((item) => item.variantId === v.id)
-              .reduce((total, item) => total + item.quantity, 0);
+  const handleUpdateSale = (updatedSale: Sale) => {
+    const previousSale = sales.find((sale) => sale.id === updatedSale.id);
+    if (!previousSale || saleHasDelivery(previousSale)) return;
 
-            return reservedQuantity > 0
-              ? { ...v, reservedStock: v.reservedStock + reservedQuantity }
-              : v;
+    const nextSale = { ...updatedSale, updatedAt: new Date().toISOString() };
+    setSales((prev) => prev.map((sale) => (sale.id === nextSale.id ? nextSale : sale)));
+    void saveSaleToSupabase(nextSale);
+    applySaleReservationDelta(previousSale, nextSale);
+
+    const updatedItemsById = new Map(nextSale.items.map((item) => [item.id, item]));
+    const removedItemIds = new Set(previousSale.items.map((item) => item.id));
+    nextSale.items.forEach((item) => removedItemIds.delete(item.id));
+
+    setBatches((prev) =>
+      prev.map((batch) => {
+        let changed = false;
+        const items = batch.items
+          .filter((batchItem) => {
+            const keepItem = !removedItemIds.has(batchItem.saleItemId);
+            if (!keepItem) changed = true;
+            return keepItem;
           })
+          .map((batchItem) => {
+            const updatedItem = updatedItemsById.get(batchItem.saleItemId);
+            if (!updatedItem) return batchItem;
+
+            const itemChanged =
+              batchItem.productId !== (updatedItem.productId || '') ||
+              batchItem.productName !== updatedItem.productName ||
+              batchItem.variantId !== (updatedItem.variantId || '') ||
+              batchItem.size !== updatedItem.size ||
+              batchItem.quantityRequested !== updatedItem.quantity;
+
+            if (!itemChanged) return batchItem;
+            changed = true;
+
+            return {
+              ...batchItem,
+              productId: updatedItem.productId || '',
+              productName: updatedItem.productName,
+              variantId: updatedItem.variantId || '',
+              size: updatedItem.size,
+              quantityRequested: updatedItem.quantity,
+              quantityMissing: Math.max(0, updatedItem.quantity - batchItem.quantityReceived),
+              status: updatedItem.status
+            };
+          });
+
+        if (!changed) return batch;
+
+        const updatedBatch = {
+          ...batch,
+          items,
+          totalItems: items.reduce((total, item) => total + item.quantityRequested, 0),
+          estimatedCost: items.reduce((total, item) => total + item.quantityRequested * item.unitCost, 0),
+          updatedAt: new Date().toISOString()
         };
-        void saveProductToSupabase(updatedProd);
-        return updatedProd;
+        void savePurchaseBatchToSupabase(updatedBatch);
+        return updatedBatch;
       })
+    );
+
+    logAuditEvent(
+      'usr-current',
+      user.name,
+      'EDITAR_VENDA',
+      'sales',
+      `Venda ${nextSale.code} editada antes da entrega`
     );
   };
 
@@ -609,8 +682,10 @@ const AppContent: React.FC = () => {
         return (
           <SalesListView
             sales={sales}
+            products={products}
             onCancelSale={handleCancelSale}
             onAddPayment={handleAddPayment}
+            onUpdateSale={handleUpdateSale}
             userName={user.name}
           />
         );
