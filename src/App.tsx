@@ -272,9 +272,20 @@ const AppContent: React.FC = () => {
     if (sale.paymentStatus !== 'pago') return reservedByVariant;
 
     sale.items
-      .filter((item) => item.status === 'reservado' && item.variantId)
+      .filter((item) => item.status === 'reservado')
       .forEach((item) => {
-        reservedByVariant.set(item.variantId!, (reservedByVariant.get(item.variantId!) || 0) + item.quantity);
+        // Regular product items
+        if (!item.isKit && item.variantId) {
+          reservedByVariant.set(item.variantId, (reservedByVariant.get(item.variantId) || 0) + item.quantity);
+        }
+        // Kit components
+        if (item.isKit && item.components) {
+          item.components
+            .filter((comp) => comp.status === 'reservado' && comp.variantId)
+            .forEach((comp) => {
+              reservedByVariant.set(comp.variantId, (reservedByVariant.get(comp.variantId) || 0) + comp.quantity);
+            });
+        }
       });
 
     return reservedByVariant;
@@ -399,15 +410,51 @@ const AppContent: React.FC = () => {
   const handleAddPayment = (saleId: string, payment: Payment) => {
     const now = new Date().toISOString();
     let paidSale: Sale | null = null;
+    let prevSale: Sale | null = null;
 
     setSales((prev) =>
       prev.map((s) => {
         if (s.id !== saleId) return s;
+        prevSale = s;
 
         const paidAmount = Math.min(s.totalAmount, s.paidAmount + payment.amount);
         const pendingAmount = Math.max(0, s.totalAmount - paidAmount);
         const paymentStatus = pendingAmount <= 0 ? 'pago' : 'parcialmente_pago';
-        const hasMissingStock = s.items.some((i) => i.status === 'pedido_a_fazer');
+
+        // Update item statuses when fully paid: aguardando_pagamento -> reservado or pedido_a_fazer
+        let updatedItems = s.items;
+        if (paymentStatus === 'pago') {
+          updatedItems = s.items.map((item) => {
+            if (item.status !== 'aguardando_pagamento') return item;
+
+            if (item.isKit && item.components) {
+              // For kits, determine status based on components
+              const updatedComponents = item.components.map((comp) => {
+                if (comp.status !== 'aguardando_pagamento') return comp;
+                const product = products.find((p) => p.id === comp.productId);
+                const variant = product?.variants.find((v) => v.id === comp.variantId);
+                const available = variant ? Math.max(0, variant.physicalStock - variant.reservedStock) : 0;
+                return { ...comp, status: available >= comp.quantity ? 'reservado' : 'pedido_a_fazer' } as typeof comp;
+              });
+              const allReserved = updatedComponents.every((c) => c.status === 'reservado');
+              return {
+                ...item,
+                components: updatedComponents,
+                status: allReserved ? 'reservado' : ('pedido_a_fazer' as any)
+              };
+            }
+
+            const product = products.find((p) => p.id === item.productId);
+            const variant = product?.variants.find((v) => v.id === item.variantId);
+            const available = variant ? Math.max(0, variant.physicalStock - variant.reservedStock) : 0;
+            return { ...item, status: available >= item.quantity ? 'reservado' : ('pedido_a_fazer' as any) };
+          });
+        }
+
+        const hasMissingStock = updatedItems.some(
+          (i) => i.status === 'pedido_a_fazer' ||
+            (i.isKit && i.components?.some((c) => c.status === 'pedido_a_fazer'))
+        );
         const overallStatus =
           paymentStatus === 'pago'
             ? hasMissingStock
@@ -421,6 +468,7 @@ const AppContent: React.FC = () => {
           pendingAmount,
           paymentStatus,
           overallStatus,
+          items: updatedItems,
           payments: [...s.payments, { ...payment, saleId, status: paymentStatus }],
           updatedAt: now
         };
@@ -432,7 +480,8 @@ const AppContent: React.FC = () => {
     );
 
     if (paidSale?.paymentStatus === 'pago') {
-      reserveSaleStock(paidSale);
+      // Apply reservation delta: reserve stock for newly reserved items
+      applySaleReservationDelta(prevSale, paidSale);
     }
   };
 
@@ -534,33 +583,149 @@ const AppContent: React.FC = () => {
   const handleSaveConference = (updatedBatch: PurchaseBatch) => {
     setBatches(batches.map((b) => (b.id === updatedBatch.id ? updatedBatch : b)));
     void savePurchaseBatchToSupabase(updatedBatch);
+
+    // When batch is fully received (conferido), update physical stock and sale item statuses
+    if (updatedBatch.status === 'recebido' || updatedBatch.status === 'em_conferencia') {
+      // Build map of variantId -> quantity received for this conference
+      const receivedVariantMap = new Map<string, number>();
+      updatedBatch.items.forEach((bItem) => {
+        if (bItem.variantId && bItem.quantityReceived > 0) {
+          receivedVariantMap.set(
+            bItem.variantId,
+            (receivedVariantMap.get(bItem.variantId) || 0) + bItem.quantityReceived
+          );
+        }
+      });
+
+      // Update physical stock for received variants
+      if (receivedVariantMap.size > 0) {
+        setProducts((prev) =>
+          prev.map((p) => {
+            let changed = false;
+            const updatedProd = {
+              ...p,
+              variants: p.variants.map((v) => {
+                const received = receivedVariantMap.get(v.id);
+                if (!received) return v;
+                changed = true;
+                return { ...v, physicalStock: v.physicalStock + received };
+              })
+            };
+            if (!changed) return p;
+            void saveProductToSupabase(updatedProd);
+            return updatedProd;
+          })
+        );
+      }
+
+      // Update sale items that were in batch to 'disponivel_entrega'
+      const batchSaleItemIds = new Set(updatedBatch.items.map((bi) => bi.saleItemId));
+      if (batchSaleItemIds.size > 0) {
+        setSales((prev) =>
+          prev.map((sale) => {
+            let changed = false;
+            const updatedItems = sale.items.map((item) => {
+              if (!batchSaleItemIds.has(item.id)) return item;
+              if (
+                item.status === 'recebido' ||
+                item.status === 'em_conferencia' ||
+                item.status === 'conferido_com_divergencia' ||
+                item.status === 'aguardando_fornecedor' ||
+                item.status === 'recebido_parcialmente'
+              ) {
+                changed = true;
+                return { ...item, status: 'disponivel_entrega' as any };
+              }
+              return item;
+            });
+            if (!changed) return sale;
+            const hasMissingStock = updatedItems.some((i) => i.status === 'pedido_a_fazer');
+            const allReady = updatedItems.every(
+              (i) => i.status === 'disponivel_entrega' || i.status === 'entregue'
+            );
+            const updatedSale = {
+              ...sale,
+              items: updatedItems,
+              overallStatus: allReady ? 'disponivel_entrega' : hasMissingStock ? 'parcialmente_disponivel' : sale.overallStatus
+            };
+            void saveSaleToSupabase(updatedSale);
+            return updatedSale;
+          })
+        );
+      }
+    }
   };
 
   const handleConfirmDelivery = (record: DeliveryRecord) => {
+    const deliveredVariantDeltas = new Map<string, number>();
+
     // Update items status in sales to delivered
     setSales((prev) =>
       prev.map((s) => {
-        if (s.id === record.saleId) {
-          const updatedItems = s.items.map((i) => {
-            const delivered = record.items.find((ri) => ri.saleItemId === i.id);
-            if (delivered) {
-              return { ...i, status: 'entregue' as any };
-            }
-            return i;
-          });
+        if (s.id !== record.saleId) return s;
 
-          const allDelivered = updatedItems.every((i) => i.status === 'entregue');
-          const updatedSale = {
-            ...s,
-            items: updatedItems,
-            overallStatus: allDelivered ? 'entregue' : s.overallStatus
-          };
-          void saveSaleToSupabase(updatedSale);
-          return updatedSale;
-        }
-        return s;
+        const updatedItems = s.items.map((i) => {
+          const delivered = record.items.find((ri) => ri.saleItemId === i.id);
+          if (!delivered) return i;
+
+          // Track variants to decrement physical stock
+          if (!i.isKit && i.variantId) {
+            deliveredVariantDeltas.set(
+              i.variantId,
+              (deliveredVariantDeltas.get(i.variantId) || 0) + i.quantity
+            );
+          }
+          // For kits, track components
+          if (i.isKit && i.components) {
+            i.components.forEach((comp) => {
+              if (comp.variantId) {
+                deliveredVariantDeltas.set(
+                  comp.variantId,
+                  (deliveredVariantDeltas.get(comp.variantId) || 0) + comp.quantity
+                );
+              }
+            });
+          }
+
+          const updatedComponents = i.components?.map((c) => ({ ...c, status: 'entregue' as any }));
+          return { ...i, status: 'entregue' as any, components: updatedComponents };
+        });
+
+        const allDelivered = updatedItems.every((i) => i.status === 'entregue');
+        const updatedSale = {
+          ...s,
+          items: updatedItems,
+          overallStatus: allDelivered ? 'entregue' : s.overallStatus
+        };
+        void saveSaleToSupabase(updatedSale);
+        return updatedSale;
       })
     );
+
+    // Decrement physical stock and reserved stock for delivered items
+    if (deliveredVariantDeltas.size > 0) {
+      setProducts((prev) =>
+        prev.map((p) => {
+          let changed = false;
+          const updatedProd = {
+            ...p,
+            variants: p.variants.map((v) => {
+              const delta = deliveredVariantDeltas.get(v.id);
+              if (!delta) return v;
+              changed = true;
+              return {
+                ...v,
+                physicalStock: Math.max(0, v.physicalStock - delta),
+                reservedStock: Math.max(0, v.reservedStock - delta)
+              };
+            })
+          };
+          if (!changed) return p;
+          void saveProductToSupabase(updatedProd);
+          return updatedProd;
+        })
+      );
+    }
   };
 
   const handleProcessReturn = (record: ReturnExchangeRecord) => {

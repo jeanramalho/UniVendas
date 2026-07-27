@@ -570,7 +570,9 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
         status: p.status,
         paidAt: p.paid_at || new Date().toISOString(),
         registeredBy: p.registered_by || 'Sistema',
-        createdAt: p.created_at || new Date().toISOString()
+        createdAt: p.created_at || new Date().toISOString(),
+        cardholderName: p.cardholder_name || undefined,
+        cardholderIsMember: p.cardholder_is_member !== undefined ? p.cardholder_is_member : undefined
       }))
     }));
   } catch (err) {
@@ -700,7 +702,9 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
           amount: p.amount,
           method: p.method,
           status: p.status,
-          paid_at: p.paidAt
+          paid_at: p.paidAt,
+          cardholder_name: p.cardholderName || null,
+          cardholder_is_member: p.cardholderIsMember !== undefined ? p.cardholderIsMember : null
         };
         if (payIsUuid) pr.id = p.id;
         return pr;

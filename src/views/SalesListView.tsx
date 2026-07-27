@@ -66,6 +66,8 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
   const [cancelReason, setCancelReason] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
   const [paymentAmount, setPaymentAmount] = useState('');
+  const [cardholderName, setCardholderName] = useState('');
+  const [cardholderIsMember, setCardholderIsMember] = useState(true);
 
   const activeProducts = products.filter((product) => product.active !== false && product.variants.length > 0);
 
@@ -137,7 +139,24 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
 
   const openEditModal = (sale: Sale) => {
     setEditingSale(sale);
-    setEditItems(sale.items.map((item) => ({ ...item, components: item.components ? [...item.components] : undefined })));
+    // Build editItems using the stored productId/size to find the correct product/variant in the catalog
+    setEditItems(sale.items.map((item) => {
+      const existingProduct = activeProducts.find((p) => p.id === item.productId);
+      if (!existingProduct) return { ...item, components: item.components ? [...item.components] : undefined };
+      // Find variant by ID first, then by size as fallback
+      const existingVariant =
+        existingProduct.variants.find((v) => v.id === item.variantId) ||
+        existingProduct.variants.find((v) => v.size === item.size) ||
+        existingProduct.variants[0];
+      const resolvedVariantId = existingVariant?.id || item.variantId || '';
+      return {
+        ...item,
+        productId: existingProduct.id,
+        variantId: resolvedVariantId,
+        size: existingVariant?.size || item.size,
+        components: item.components ? [...item.components] : undefined
+      };
+    }));
   };
 
   const updateEditItem = (itemId: string, productId: string, variantId: string, quantity: number) => {
@@ -212,6 +231,8 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
     setPaymentModalSale(sale);
     setPaymentMethod('PIX');
     setPaymentAmount(currencyInputValue(sale.pendingAmount || sale.totalAmount - sale.paidAmount));
+    setCardholderName('');
+    setCardholderIsMember(true);
   };
 
   const handleConfirmPayment = (e: React.FormEvent) => {
@@ -232,11 +253,17 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
       status: 'pago',
       paidAt: new Date().toISOString(),
       registeredBy: userName,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(paymentMethod === 'Cartão de crédito' ? {
+        cardholderName: cardholderIsMember ? paymentModalSale.memberName : cardholderName,
+        cardholderIsMember
+      } : {})
     });
 
     setPaymentModalSale(null);
     setPaymentAmount('');
+    setCardholderName('');
+    setCardholderIsMember(true);
   };
 
   return (
@@ -450,6 +477,11 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                     <span className="text-[10px] text-gray-500 block">
                       {p.paidAt ? new Date(p.paidAt).toLocaleDateString('pt-BR') : '-'} • Resp: {p.registeredBy}
                     </span>
+                    {p.cardholderName && (
+                      <span className="text-[10px] text-amber-300 block mt-0.5">
+                        Titular: {p.cardholderName}{p.cardholderIsMember === false ? ' (não membro)' : ''}
+                      </span>
+                    )}
                   </div>
                   <span className="font-mono font-bold text-emerald-400">R$ {formatCurrency(p.amount)}</span>
                 </div>
@@ -626,7 +658,11 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
               <label className="block text-xs font-semibold text-gray-300 mb-1">Forma de Pagamento</label>
               <select
                 value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                onChange={(e) => {
+                  setPaymentMethod(e.target.value as PaymentMethod);
+                  setCardholderIsMember(true);
+                  setCardholderName('');
+                }}
                 className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-[#F97316]"
               >
                 <option value="PIX">PIX</option>
@@ -637,6 +673,33 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                 <option value="Outro">Outro</option>
               </select>
             </div>
+
+            {paymentMethod === 'Cartão de crédito' && (
+              <div className="space-y-2 bg-[#111111] border border-[#333333] rounded-xl p-3">
+                <span className="block text-[10px] font-bold text-amber-400 uppercase">Titular do Cartão</span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cardholderIsMember}
+                    onChange={(e) => {
+                      setCardholderIsMember(e.target.checked);
+                      if (e.target.checked) setCardholderName('');
+                    }}
+                    className="accent-[#F97316]"
+                  />
+                  <span className="text-xs text-gray-300">O próprio membro é o titular do cartão</span>
+                </label>
+                {!cardholderIsMember && (
+                  <input
+                    type="text"
+                    placeholder="Nome do titular do cartão"
+                    value={cardholderName}
+                    onChange={(e) => setCardholderName(e.target.value)}
+                    className="w-full bg-[#1a1a1a] border border-[#444] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-semibold text-gray-300 mb-1">Valor Pago (R$)</label>

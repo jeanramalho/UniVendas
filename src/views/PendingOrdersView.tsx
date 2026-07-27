@@ -11,18 +11,45 @@ export const PendingOrdersView: React.FC<PendingOrdersViewProps> = ({ sales, onC
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [filterUnit, setFilterUnit] = useState('all');
 
-  // Find all items eligible for supplier order
-  const eligibleItems: { sale: Sale; item: SaleItem }[] = [];
+  // Find all items eligible for supplier order (includes kit components)
+  type EligibleEntry = { sale: Sale; item: SaleItem; kitLabel?: string };
+  const eligibleItems: EligibleEntry[] = [];
 
   sales.forEach((s) => {
     if (s.overallStatus === 'cancelada') return;
     if (s.paymentStatus !== 'pago') return;
 
     s.items.forEach((item) => {
-      if (item.status === 'pedido_a_fazer' && !item.batchId) {
-        if (filterUnit === 'all' || s.memberUnit === filterUnit) {
-          eligibleItems.push({ sale: s, item });
-        }
+      if (filterUnit !== 'all' && s.memberUnit !== filterUnit) return;
+
+      if (!item.isKit && item.status === 'pedido_a_fazer' && !item.batchId) {
+        eligibleItems.push({ sale: s, item });
+      }
+
+      // Also expand kit components with pedido_a_fazer
+      if (item.isKit && item.components) {
+        item.components.forEach((comp) => {
+          if (comp.status === 'pedido_a_fazer') {
+            // Represent the component as a virtual SaleItem for display/batch creation
+            const virtualItem: SaleItem = {
+              id: comp.id,
+              saleId: s.id,
+              isKit: false,
+              productId: comp.productId,
+              productName: comp.productName,
+              variantId: comp.variantId,
+              size: comp.size,
+              quantity: comp.quantity,
+              unitPrice: comp.unitPrice,
+              totalPrice: comp.unitPrice * comp.quantity,
+              status: 'pedido_a_fazer',
+              batchId: item.batchId
+            };
+            if (!virtualItem.batchId) {
+              eligibleItems.push({ sale: s, item: virtualItem, kitLabel: item.productName });
+            }
+          }
+        });
       }
     });
   });
@@ -126,7 +153,7 @@ export const PendingOrdersView: React.FC<PendingOrdersViewProps> = ({ sales, onC
                   </td>
                 </tr>
               ) : (
-                eligibleItems.map(({ sale, item }) => {
+                eligibleItems.map(({ sale, item, kitLabel }) => {
                   const isSelected = selectedItemIds.includes(item.id);
                   return (
                     <tr
@@ -145,7 +172,14 @@ export const PendingOrdersView: React.FC<PendingOrdersViewProps> = ({ sales, onC
                       </td>
                       <td className="p-3 font-semibold text-white">{sale.memberName}</td>
                       <td className="p-3 text-gray-400">{sale.memberUnit}</td>
-                      <td className="p-3 font-bold text-white">{item.productName}</td>
+                      <td className="p-3 font-bold text-white">
+                        {item.productName}
+                        {kitLabel && (
+                          <span className="ml-1 text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded font-bold">
+                            Kit: {kitLabel}
+                          </span>
+                        )}
+                      </td>
                       <td className="p-3 font-bold text-amber-300">{item.size}</td>
                       <td className="p-3 text-center font-mono font-bold">{item.quantity}x</td>
                       <td className="p-3 font-mono text-[#F97316] font-bold">{sale.code}</td>
