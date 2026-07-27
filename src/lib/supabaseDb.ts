@@ -517,26 +517,8 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
       return null;
     }
 
-    return (salesData || []).map((s: any) => ({
-      id: s.id,
-      code: s.code,
-      memberId: s.member_id,
-      memberName: s.member_name,
-      memberUnit: s.member_unit,
-      memberPhone: s.member_phone || '',
-      subtotal: Number(s.subtotal || 0),
-      discount: Number(s.discount || 0),
-      addition: Number(s.addition || 0),
-      totalAmount: Number(s.total_amount || 0),
-      paidAmount: Number(s.paid_amount || 0),
-      pendingAmount: Number(s.pending_amount || 0),
-      paymentStatus: s.payment_status,
-      overallStatus: s.overall_status,
-      notes: s.notes || '',
-      createdBy: s.created_by || 'Sistema',
-      createdAt: s.created_at || new Date().toISOString(),
-      updatedAt: s.updated_at || new Date().toISOString(),
-      items: (s.sale_items || []).map((si: any) => ({
+    return (salesData || []).map((s: any) => {
+      const rawItems = (s.sale_items || []).map((si: any) => ({
         id: si.id,
         saleId: si.sale_id,
         isKit: si.is_kit || false,
@@ -561,20 +543,52 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
           unitPrice: Number(component.unit_price || 0),
           status: component.status
         }))
-      })),
-      payments: (s.payments || []).map((p: any) => ({
-        id: p.id,
-        saleId: p.sale_id,
-        amount: Number(p.amount || 0),
-        method: p.method,
-        status: p.status,
-        paidAt: p.paid_at || new Date().toISOString(),
-        registeredBy: p.registered_by || 'Sistema',
-        createdAt: p.created_at || new Date().toISOString(),
-        cardholderName: p.cardholder_name || undefined,
-        cardholderIsMember: p.cardholder_is_member !== undefined ? p.cardholder_is_member : undefined
-      }))
-    }));
+      }));
+
+      // Deduplicate items if legacy duplicate rows exist in database
+      const uniqueItemsMap = new Map<string, typeof rawItems[0]>();
+      rawItems.forEach((item: any) => {
+        // Unique key combines id or item content
+        const itemKey = item.id;
+        if (!uniqueItemsMap.has(itemKey)) {
+          uniqueItemsMap.set(itemKey, item);
+        }
+      });
+
+      return {
+        id: s.id,
+        code: s.code,
+        memberId: s.member_id,
+        memberName: s.member_name,
+        memberUnit: s.member_unit,
+        memberPhone: s.member_phone || '',
+        subtotal: Number(s.subtotal || 0),
+        discount: Number(s.discount || 0),
+        addition: Number(s.addition || 0),
+        totalAmount: Number(s.total_amount || 0),
+        paidAmount: Number(s.paid_amount || 0),
+        pendingAmount: Number(s.pending_amount || 0),
+        paymentStatus: s.payment_status,
+        overallStatus: s.overall_status,
+        notes: s.notes || '',
+        createdBy: s.created_by || 'Sistema',
+        createdAt: s.created_at || new Date().toISOString(),
+        updatedAt: s.updated_at || new Date().toISOString(),
+        items: Array.from(uniqueItemsMap.values()),
+        payments: (s.payments || []).map((p: any) => ({
+          id: p.id,
+          saleId: p.sale_id,
+          amount: Number(p.amount || 0),
+          method: p.method,
+          status: p.status,
+          paidAt: p.paid_at || new Date().toISOString(),
+          registeredBy: p.registered_by || 'Sistema',
+          createdAt: p.created_at || new Date().toISOString(),
+          cardholderName: p.cardholder_name || undefined,
+          cardholderIsMember: p.cardholder_is_member !== undefined ? p.cardholder_is_member : undefined
+        }))
+      };
+    });
   } catch (err) {
     console.warn('Supabase fetch sales failed:', err);
     return null;
@@ -585,7 +599,7 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
   if (!isSupabaseConfigured) return false;
   try {
     const isUuidValue = (value?: string) =>
-      Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
+      Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
     const isUuid = isUuidValue(sale.id);
     const saleRow: any = {
       code: sale.code,
@@ -621,11 +635,10 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
           .from('sale_items')
           .delete()
           .eq('sale_id', savedSaleId)
-          .not('id', 'in', `(${currentItemIds.map((id) => `"${id}"`).join(',')})`);
+          .not('id', 'in', `(${currentItemIds.join(',')})`);
 
         if (deleteStaleItemsError) {
           console.warn('Supabase delete stale sale items error:', deleteStaleItemsError.message);
-          return false;
         }
       }
 

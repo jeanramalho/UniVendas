@@ -112,24 +112,40 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
       return;
     }
 
-    // Items start as aguardando_pagamento — status will change after payment
-    const itemStatus: SaleItemStatus = 'aguardando_pagamento';
+    const existingIndex = cartItems.findIndex(
+      (i) => !i.isKit && i.productId === selectedProduct.id && i.variantId === variant.id
+    );
 
-    const newItem: SaleItem = {
-      id: createId(),
-      saleId: '',
-      isKit: false,
-      productId: selectedProduct.id,
-      productName: selectedProduct.name,
-      variantId: variant.id,
-      size: variant.size,
-      quantity: itemQty,
-      unitPrice: variant.price,
-      totalPrice: variant.price * itemQty,
-      status: itemStatus
-    };
+    if (existingIndex >= 0) {
+      const updatedCart = [...cartItems];
+      const existing = updatedCart[existingIndex];
+      const newQty = existing.quantity + itemQty;
+      updatedCart[existingIndex] = {
+        ...existing,
+        quantity: newQty,
+        totalPrice: variant.price * newQty
+      };
+      setCartItems(updatedCart);
+    } else {
+      // Items start as aguardando_pagamento — status will change after payment
+      const itemStatus: SaleItemStatus = 'aguardando_pagamento';
 
-    setCartItems([...cartItems, newItem]);
+      const newItem: SaleItem = {
+        id: createId(),
+        saleId: '',
+        isKit: false,
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        variantId: variant.id,
+        size: variant.size,
+        quantity: itemQty,
+        unitPrice: variant.price,
+        totalPrice: variant.price * itemQty,
+        status: itemStatus
+      };
+
+      setCartItems([...cartItems, newItem]);
+    }
     setItemQty(1);
   };
 

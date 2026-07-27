@@ -450,19 +450,44 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
               </h4>
               <div className="space-y-1.5">
                 {viewingSale.items.map((it) => (
-                  <div key={it.id} className="bg-[#111111] p-3 rounded-lg border border-[#222222] flex items-center justify-between text-xs">
-                    <div>
-                      <div className="font-bold text-white">{it.productName}</div>
-                      <div className="text-[11px] text-gray-400">
-                        Tamanho: <span className="text-amber-300 font-bold">{it.size}</span> • Qtd: {it.quantity}
+                  <div key={it.id} className="bg-[#111111] p-3 rounded-lg border border-[#222222] space-y-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-bold text-white flex items-center space-x-1.5">
+                          <span>{it.productName}</span>
+                          {it.isKit && (
+                            <span className="text-[9px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded uppercase">
+                              Kit Promocional
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-400">
+                          Tamanho: <span className="text-amber-300 font-bold">{it.size}</span> • Qtd: {it.quantity}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-[#F97316]">R$ {formatCurrency(it.totalPrice)}</div>
+                        <span className="text-[9px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded font-mono uppercase">
+                          {it.status.replace('_', ' ')}
+                        </span>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-bold text-[#F97316]">R$ {formatCurrency(it.totalPrice)}</div>
-                      <span className="text-[9px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded font-mono uppercase">
-                        {it.status.replace('_', ' ')}
-                      </span>
-                    </div>
+
+                    {it.isKit && it.components && it.components.length > 0 && (
+                      <div className="bg-[#181818] p-2.5 rounded-lg border border-[#2a2a2a] space-y-1 text-[11px]">
+                        <span className="text-[10px] font-bold text-amber-400 block uppercase">
+                          Componentes do Kit:
+                        </span>
+                        {it.components.map((comp) => (
+                          <div key={comp.id} className="flex items-center justify-between text-gray-300">
+                            <span>• {comp.productName} ({comp.size}) — {comp.quantity}x</span>
+                            <span className="text-[9px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded font-mono uppercase">
+                              {comp.status.replace('_', ' ')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
