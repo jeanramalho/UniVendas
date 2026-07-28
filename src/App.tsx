@@ -583,6 +583,7 @@ const AppContent: React.FC = () => {
     const reservedByVariant = new Map<string, number>();
     if (sale.overallStatus === 'cancelada') return reservedByVariant;
 
+<<<<<<< HEAD
     sale.items.forEach((item) => {
       if (item.status === 'entregue') return;
 
@@ -620,6 +621,24 @@ const AppContent: React.FC = () => {
         }
       }
     });
+=======
+    sale.items
+      .filter((item) => item.status === 'reservado')
+      .forEach((item) => {
+        // Regular product items
+        if (!item.isKit && item.variantId) {
+          reservedByVariant.set(item.variantId, (reservedByVariant.get(item.variantId) || 0) + item.quantity);
+        }
+        // Kit components
+        if (item.isKit && item.components) {
+          item.components
+            .filter((comp) => comp.status === 'reservado' && comp.variantId)
+            .forEach((comp) => {
+              reservedByVariant.set(comp.variantId, (reservedByVariant.get(comp.variantId) || 0) + comp.quantity);
+            });
+        }
+      });
+>>>>>>> refs/remotes/origin/main
 
     return reservedByVariant;
   };
@@ -757,6 +776,7 @@ const AppContent: React.FC = () => {
         // Update item statuses when fully paid: aguardando_pagamento -> reservado or pedido_a_fazer
         let updatedItems = s.items;
         if (paymentStatus === 'pago') {
+<<<<<<< HEAD
           const tempAvailable = new Map<string, number>();
           products.forEach((p) => {
             p.variants.forEach((v) => {
@@ -764,10 +784,13 @@ const AppContent: React.FC = () => {
             });
           });
 
+=======
+>>>>>>> refs/remotes/origin/main
           updatedItems = s.items.map((item) => {
             if (item.status !== 'aguardando_pagamento') return item;
 
             if (item.isKit && item.components) {
+<<<<<<< HEAD
               const updatedComponents = item.components.map((comp) => {
                 if (comp.status !== 'aguardando_pagamento' || !comp.variantId) return comp;
                 const avail = tempAvailable.get(comp.variantId) || 0;
@@ -777,11 +800,21 @@ const AppContent: React.FC = () => {
                 } else {
                   return { ...comp, status: 'pedido_a_fazer' as const };
                 }
+=======
+              // For kits, determine status based on components
+              const updatedComponents = item.components.map((comp) => {
+                if (comp.status !== 'aguardando_pagamento') return comp;
+                const product = products.find((p) => p.id === comp.productId);
+                const variant = product?.variants.find((v) => v.id === comp.variantId);
+                const available = variant ? Math.max(0, variant.physicalStock - variant.reservedStock) : 0;
+                return { ...comp, status: available >= comp.quantity ? 'reservado' : 'pedido_a_fazer' } as typeof comp;
+>>>>>>> refs/remotes/origin/main
               });
               const allReserved = updatedComponents.every((c) => c.status === 'reservado');
               return {
                 ...item,
                 components: updatedComponents,
+<<<<<<< HEAD
                 status: allReserved ? ('reservado' as const) : ('pedido_a_fazer' as const)
               };
             }
@@ -797,6 +830,16 @@ const AppContent: React.FC = () => {
             }
 
             return item;
+=======
+                status: allReserved ? 'reservado' : ('pedido_a_fazer' as any)
+              };
+            }
+
+            const product = products.find((p) => p.id === item.productId);
+            const variant = product?.variants.find((v) => v.id === item.variantId);
+            const available = variant ? Math.max(0, variant.physicalStock - variant.reservedStock) : 0;
+            return { ...item, status: available >= item.quantity ? 'reservado' : ('pedido_a_fazer' as any) };
+>>>>>>> refs/remotes/origin/main
           });
         }
 
@@ -829,6 +872,10 @@ const AppContent: React.FC = () => {
     );
 
     if (paidSale?.paymentStatus === 'pago') {
+<<<<<<< HEAD
+=======
+      // Apply reservation delta: reserve stock for newly reserved items
+>>>>>>> refs/remotes/origin/main
       applySaleReservationDelta(prevSale, paidSale);
     }
   };
@@ -932,7 +979,13 @@ const AppContent: React.FC = () => {
     setBatches(batches.map((b) => (b.id === updatedBatch.id ? updatedBatch : b)));
     void savePurchaseBatchToSupabase(updatedBatch);
 
+<<<<<<< HEAD
     if (updatedBatch.status === 'recebido' || updatedBatch.status === 'em_conferencia') {
+=======
+    // When batch is fully received (conferido), update physical stock and sale item statuses
+    if (updatedBatch.status === 'recebido' || updatedBatch.status === 'em_conferencia') {
+      // Build map of variantId -> quantity received for this conference
+>>>>>>> refs/remotes/origin/main
       const receivedVariantMap = new Map<string, number>();
       updatedBatch.items.forEach((bItem) => {
         if (bItem.variantId && bItem.quantityReceived > 0) {
@@ -943,6 +996,10 @@ const AppContent: React.FC = () => {
         }
       });
 
+<<<<<<< HEAD
+=======
+      // Update physical stock for received variants
+>>>>>>> refs/remotes/origin/main
       if (receivedVariantMap.size > 0) {
         setProducts((prev) =>
           prev.map((p) => {
@@ -963,6 +1020,10 @@ const AppContent: React.FC = () => {
         );
       }
 
+<<<<<<< HEAD
+=======
+      // Update sale items that were in batch to 'disponivel_entrega'
+>>>>>>> refs/remotes/origin/main
       const batchSaleItemIds = new Set(updatedBatch.items.map((bi) => bi.saleItemId));
       if (batchSaleItemIds.size > 0) {
         setSales((prev) =>
@@ -1012,12 +1073,20 @@ const AppContent: React.FC = () => {
           const delivered = record.items.find((ri) => ri.saleItemId === i.id);
           if (!delivered) return i;
 
+<<<<<<< HEAD
+=======
+          // Track variants to decrement physical stock
+>>>>>>> refs/remotes/origin/main
           if (!i.isKit && i.variantId) {
             deliveredVariantDeltas.set(
               i.variantId,
               (deliveredVariantDeltas.get(i.variantId) || 0) + i.quantity
             );
           }
+<<<<<<< HEAD
+=======
+          // For kits, track components
+>>>>>>> refs/remotes/origin/main
           if (i.isKit && i.components) {
             i.components.forEach((comp) => {
               if (comp.variantId) {
