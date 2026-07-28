@@ -517,26 +517,8 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
       return null;
     }
 
-    return (salesData || []).map((s: any) => ({
-      id: s.id,
-      code: s.code,
-      memberId: s.member_id,
-      memberName: s.member_name,
-      memberUnit: s.member_unit,
-      memberPhone: s.member_phone || '',
-      subtotal: Number(s.subtotal || 0),
-      discount: Number(s.discount || 0),
-      addition: Number(s.addition || 0),
-      totalAmount: Number(s.total_amount || 0),
-      paidAmount: Number(s.paid_amount || 0),
-      pendingAmount: Number(s.pending_amount || 0),
-      paymentStatus: s.payment_status,
-      overallStatus: s.overall_status,
-      notes: s.notes || '',
-      createdBy: s.created_by || 'Sistema',
-      createdAt: s.created_at || new Date().toISOString(),
-      updatedAt: s.updated_at || new Date().toISOString(),
-      items: (s.sale_items || []).map((si: any) => ({
+    return (salesData || []).map((s: any) => {
+      const rawItems = (s.sale_items || []).map((si: any) => ({
         id: si.id,
         saleId: si.sale_id,
         isKit: si.is_kit || false,
@@ -561,18 +543,74 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
           unitPrice: Number(component.unit_price || 0),
           status: component.status
         }))
-      })),
-      payments: (s.payments || []).map((p: any) => ({
-        id: p.id,
-        saleId: p.sale_id,
-        amount: Number(p.amount || 0),
-        method: p.method,
-        status: p.status,
-        paidAt: p.paid_at || new Date().toISOString(),
-        registeredBy: p.registered_by || 'Sistema',
-        createdAt: p.created_at || new Date().toISOString()
-      }))
-    }));
+      }));
+
+      // Deduplicate items if legacy duplicate rows exist in database
+      const uniqueItemsMap = new Map<string, typeof rawItems[0]>();
+      rawItems.forEach((item: any) => {
+        // Key by product/variant/size/kit identity to filter out duplicate database rows
+        const itemKey = item.isKit
+          ? `kit-${item.kitId || item.productName}`
+          : `item-${item.productId || item.productName}-${item.variantId || item.size}`;
+
+        if (!uniqueItemsMap.has(itemKey)) {
+          uniqueItemsMap.set(itemKey, item);
+        } else {
+          // If item already exists in map, prefer the one that has a valid UUID if previous didn't
+          const existing = uniqueItemsMap.get(itemKey)!;
+          if (!existing.id && item.id) {
+            uniqueItemsMap.set(itemKey, item);
+          }
+        }
+      });
+
+      const uniqueItems = Array.from(uniqueItemsMap.values());
+      // Auto-cleanup legacy duplicate rows from Supabase database if any exist
+      if (rawItems.length > uniqueItems.length) {
+        const keepIds = new Set(uniqueItems.map((i) => i.id).filter(Boolean));
+        const duplicateIds = rawItems
+          .map((i: any) => i.id)
+          .filter((id: string) => id && !keepIds.has(id));
+
+        if (duplicateIds.length > 0) {
+          void supabase.from('sale_items').delete().in('id', duplicateIds);
+        }
+      }
+
+      return {
+        id: s.id,
+        code: s.code,
+        memberId: s.member_id,
+        memberName: s.member_name,
+        memberUnit: s.member_unit,
+        memberPhone: s.member_phone || '',
+        subtotal: Number(s.subtotal || 0),
+        discount: Number(s.discount || 0),
+        addition: Number(s.addition || 0),
+        totalAmount: Number(s.total_amount || 0),
+        paidAmount: Number(s.paid_amount || 0),
+        pendingAmount: Number(s.pending_amount || 0),
+        paymentStatus: s.payment_status,
+        overallStatus: s.overall_status,
+        notes: s.notes || '',
+        createdBy: s.created_by || 'Sistema',
+        createdAt: s.created_at || new Date().toISOString(),
+        updatedAt: s.updated_at || new Date().toISOString(),
+        items: Array.from(uniqueItemsMap.values()),
+        payments: (s.payments || []).map((p: any) => ({
+          id: p.id,
+          saleId: p.sale_id,
+          amount: Number(p.amount || 0),
+          method: p.method,
+          status: p.status,
+          paidAt: p.paid_at || new Date().toISOString(),
+          registeredBy: p.registered_by || 'Sistema',
+          createdAt: p.created_at || new Date().toISOString(),
+          cardholderName: p.cardholder_name || undefined,
+          cardholderIsMember: p.cardholder_is_member !== undefined ? p.cardholder_is_member : undefined
+        }))
+      };
+    });
   } catch (err) {
     console.warn('Supabase fetch sales failed:', err);
     return null;
@@ -583,7 +621,7 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
   if (!isSupabaseConfigured) return false;
   try {
     const isUuidValue = (value?: string) =>
-      Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
+      Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
     const isUuid = isUuidValue(sale.id);
     const saleRow: any = {
       code: sale.code,
@@ -619,11 +657,10 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
           .from('sale_items')
           .delete()
           .eq('sale_id', savedSaleId)
-          .not('id', 'in', `(${currentItemIds.map((id) => `"${id}"`).join(',')})`);
+          .not('id', 'in', `(${currentItemIds.join(',')})`);
 
         if (deleteStaleItemsError) {
           console.warn('Supabase delete stale sale items error:', deleteStaleItemsError.message);
-          return false;
         }
       }
 
@@ -694,13 +731,15 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
 
     if (sale.payments && sale.payments.length > 0) {
       const payRows = sale.payments.map((p) => {
-        const payIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id);
+        const payIsUuid = isUuidValue(p.id);
         const pr: any = {
           sale_id: savedSaleId,
           amount: p.amount,
           method: p.method,
           status: p.status,
-          paid_at: p.paidAt
+          paid_at: p.paidAt,
+          cardholder_name: p.cardholderName || null,
+          cardholder_is_member: p.cardholderIsMember !== undefined ? p.cardholderIsMember : null
         };
         if (payIsUuid) pr.id = p.id;
         return pr;

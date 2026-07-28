@@ -64,6 +64,8 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
   const [paidAmountInput, setPaidAmountInput] = useState('');
   const [saleNotes, setSaleNotes] = useState('');
   const [saleCompleted, setSaleCompleted] = useState<Sale | null>(null);
+  const [cardholderName, setCardholderName] = useState('');
+  const [cardholderIsMember, setCardholderIsMember] = useState(true);
 
   const selectedProduct = availableProducts.find((product) => product.id === selectedProductId) || null;
 
@@ -110,23 +112,40 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
       return;
     }
 
-    const itemStatus: SaleItemStatus = availableStock >= itemQty ? 'reservado' : 'pedido_a_fazer';
+    const existingIndex = cartItems.findIndex(
+      (i) => !i.isKit && i.productId === selectedProduct.id && i.variantId === variant.id
+    );
 
-    const newItem: SaleItem = {
-      id: createId(),
-      saleId: '',
-      isKit: false,
-      productId: selectedProduct.id,
-      productName: selectedProduct.name,
-      variantId: variant.id,
-      size: variant.size,
-      quantity: itemQty,
-      unitPrice: variant.price,
-      totalPrice: variant.price * itemQty,
-      status: itemStatus
-    };
+    if (existingIndex >= 0) {
+      const updatedCart = [...cartItems];
+      const existing = updatedCart[existingIndex];
+      const newQty = existing.quantity + itemQty;
+      updatedCart[existingIndex] = {
+        ...existing,
+        quantity: newQty,
+        totalPrice: variant.price * newQty
+      };
+      setCartItems(updatedCart);
+    } else {
+      // Items start as aguardando_pagamento — status will change after payment
+      const itemStatus: SaleItemStatus = 'aguardando_pagamento';
 
-    setCartItems([...cartItems, newItem]);
+      const newItem: SaleItem = {
+        id: createId(),
+        saleId: '',
+        isKit: false,
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        variantId: variant.id,
+        size: variant.size,
+        quantity: itemQty,
+        unitPrice: variant.price,
+        totalPrice: variant.price * itemQty,
+        status: itemStatus
+      };
+
+      setCartItems([...cartItems, newItem]);
+    }
     setItemQty(1);
   };
 
@@ -143,12 +162,11 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
       quantity: 1,
       unitPrice: selectedKit.price,
       totalPrice: selectedKit.price,
-      status: 'pedido_a_fazer', // Kit components calculated individually
+      status: 'aguardando_pagamento', // Kit status determined after payment
       components: selectedKit.items.map((ki) => {
         const p = products.find((pr) => pr.id === ki.productId);
         const chosenSize = kitComponentSizes[ki.id] || p?.variants[0]?.size || '';
         const variant = p?.variants.find((v) => v.size === chosenSize) || p?.variants[0];
-        const availableStock = Math.max(0, (variant?.physicalStock || 0) - (variant?.reservedStock || 0));
 
         return {
           id: createId(),
@@ -158,7 +176,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
           size: chosenSize,
           quantity: ki.quantity,
           unitPrice: p?.basePrice || 45.0,
-          status: availableStock >= ki.quantity ? 'reservado' : 'pedido_a_fazer'
+          status: 'aguardando_pagamento' as SaleItemStatus
         };
       })
     };
@@ -189,10 +207,70 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
     if (!selectedMember) return;
     if (cartItems.length === 0) return;
 
+    // Process item statuses based on payment and physical stock availability
+    let processedItems = cartItems;
+    if (paidAmount > 0) {
+      const tempAvailable = new Map<string, number>();
+      products.forEach((p) => {
+        p.variants.forEach((v) => {
+          tempAvailable.set(v.id, Math.max(0, v.physicalStock - v.reservedStock));
+        });
+      });
+
+      processedItems = cartItems.map((item) => {
+        if (item.isKit && item.components && item.components.length > 0) {
+          const updatedComponents = item.components.map((comp) => {
+            const p = products.find((pr) => pr.id === comp.productId || pr.name.trim().toLowerCase() === comp.productName.trim().toLowerCase());
+            const v = p?.variants.find((vr) => vr.id === comp.variantId || vr.size.trim().toLowerCase() === comp.size.trim().toLowerCase()) || p?.variants[0];
+            const vId = v?.id;
+
+            if (vId) {
+              const avail = tempAvailable.get(vId) || 0;
+              if (avail >= comp.quantity) {
+                tempAvailable.set(vId, avail - comp.quantity);
+                return { ...comp, status: 'reservado' as const };
+              } else {
+                return { ...comp, status: 'pedido_a_fazer' as const };
+              }
+            }
+            return { ...comp, status: 'pedido_a_fazer' as const };
+          });
+
+          const allReserved = updatedComponents.every((c) => c.status === 'reservado');
+          const anyReserved = updatedComponents.some((c) => c.status === 'reservado');
+          const kitStatus = allReserved ? 'reservado' : anyReserved ? 'reservado' : 'pedido_a_fazer';
+
+          return {
+            ...item,
+            components: updatedComponents,
+            status: kitStatus as SaleItemStatus
+          };
+        }
+
+        const p = products.find((pr) => pr.id === item.productId || pr.name.trim().toLowerCase() === item.productName.trim().toLowerCase());
+        const v = p?.variants.find((vr) => vr.id === item.variantId || vr.size.trim().toLowerCase() === item.size.trim().toLowerCase()) || p?.variants[0];
+        const vId = v?.id;
+
+        if (vId) {
+          const avail = tempAvailable.get(vId) || 0;
+          if (avail >= item.quantity) {
+            tempAvailable.set(vId, avail - item.quantity);
+            return { ...item, status: 'reservado' as const };
+          } else {
+            return { ...item, status: 'pedido_a_fazer' as const };
+          }
+        }
+
+        return { ...item, status: 'pedido_a_fazer' as const };
+      });
+    }
+
     // Check overall sale status
     let overallStatus: SaleStatus = 'aguardando_pagamento';
-    if (paymentStatus === 'pago') {
-      const hasMissingStock = cartItems.some((i) => i.status === 'pedido_a_fazer');
+    if (paidAmount > 0) {
+      const hasMissingStock = processedItems.some((i) =>
+        i.status === 'pedido_a_fazer' || (i.isKit && i.components?.some((c) => c.status === 'pedido_a_fazer'))
+      );
       overallStatus = hasMissingStock ? 'aguardando_pedido' : 'parcialmente_disponivel';
     }
 
@@ -206,7 +284,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
       memberName: selectedMember.name,
       memberUnit: selectedMember.unit,
       memberPhone: selectedMember.cellphone,
-      items: cartItems.map((i) => ({ ...i, saleId })),
+      items: processedItems.map((i) => ({ ...i, saleId })),
       subtotal,
       discount,
       addition: 0,
@@ -226,7 +304,11 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
                 status: paymentStatus,
                 paidAt: new Date().toISOString(),
                 registeredBy: userName,
-                createdAt: new Date().toISOString()
+                createdAt: new Date().toISOString(),
+                ...(paymentMethod === 'Cartão de crédito' ? {
+                  cardholderName: cardholderIsMember ? selectedMember!.name : cardholderName,
+                  cardholderIsMember
+                } : {})
               }
             ]
           : [],
@@ -255,6 +337,8 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
     setPaidAmountInput('');
     setMemberSearch('');
     setSaleCompleted(null);
+    setCardholderName('');
+    setCardholderIsMember(true);
   };
 
   if (saleCompleted) {
@@ -611,7 +695,11 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
                 <label className="block text-gray-400 mb-1 font-semibold">Forma de Pagamento</label>
                 <select
                   value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value as any)}
+                  onChange={(e) => {
+                    setPaymentMethod(e.target.value as any);
+                    setCardholderIsMember(true);
+                    setCardholderName('');
+                  }}
                   className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-white focus:outline-none"
                 >
                   <option value="PIX">PIX</option>
@@ -621,6 +709,33 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
                   <option value="Transferência">Transferência Bancária</option>
                 </select>
               </div>
+
+              {paymentMethod === 'Cartão de crédito' && (
+                <div className="space-y-2 bg-[#111111] border border-[#333333] rounded-xl p-3">
+                  <span className="block text-[10px] font-bold text-amber-400 uppercase">Titular do Cartão</span>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cardholderIsMember}
+                      onChange={(e) => {
+                        setCardholderIsMember(e.target.checked);
+                        if (e.target.checked) setCardholderName('');
+                      }}
+                      className="accent-[#F97316]"
+                    />
+                    <span className="text-xs text-gray-300">O próprio membro é o titular do cartão</span>
+                  </label>
+                  {!cardholderIsMember && (
+                    <input
+                      type="text"
+                      placeholder="Nome do titular do cartão"
+                      value={cardholderName}
+                      onChange={(e) => setCardholderName(e.target.value)}
+                      className="w-full bg-[#1a1a1a] border border-[#444] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                    />
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block text-gray-400 mb-1 font-semibold">Valor Efetivamente Pago (R$)</label>

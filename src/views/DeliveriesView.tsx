@@ -19,9 +19,9 @@ export const DeliveriesView: React.FC<DeliveriesViewProps> = ({
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [deliveredTo, setDeliveredTo] = useState('');
 
-  // Items ready for delivery (reserved or disponivel_entrega)
-  const readySales = sales.filter((s) =>
-    s.items.some((i) => i.status === 'reservado' || i.status === 'disponivel_entrega')
+  // Sales eligible for delivery (paid sales with un-delivered items)
+  const readySales = sales.filter(
+    (s) => s.overallStatus !== 'cancelada' && s.paidAmount > 0 && s.items.some((i) => i.status !== 'entregue')
   );
 
   const filtered = readySales.filter((s) => {
@@ -116,8 +116,9 @@ export const DeliveriesView: React.FC<DeliveriesViewProps> = ({
             ) : (
               filtered.map((s) => {
                 const readyCount = s.items.filter(
-                  (i) => i.status === 'reservado' || i.status === 'disponivel_entrega'
+                  (i) => (i.status === 'reservado' || i.status === 'disponivel_entrega') && i.status !== 'entregue'
                 ).length;
+                const pendingCount = s.items.filter((i) => i.status === 'pedido_a_fazer').length;
 
                 return (
                   <div
@@ -133,8 +134,16 @@ export const DeliveriesView: React.FC<DeliveriesViewProps> = ({
                       <span className="font-bold text-sm text-white">{s.memberName}</span>
                       <span className="font-mono text-xs text-[#F97316] font-bold">{s.code}</span>
                     </div>
-                    <div className="text-xs text-gray-400 mt-1">
-                      {s.memberUnit} • <span className="text-emerald-400 font-bold">{readyCount} itens prontos</span>
+                    <div className="text-xs text-gray-400 mt-1 flex items-center justify-between">
+                      <span>{s.memberUnit}</span>
+                      <span className="space-x-1">
+                        {readyCount > 0 && (
+                          <span className="text-emerald-400 font-bold">{readyCount} pronto(s)</span>
+                        )}
+                        {pendingCount > 0 && (
+                          <span className="text-amber-400 text-[10px]">({pendingCount} a pedir)</span>
+                        )}
+                      </span>
                     </div>
                   </div>
                 );
@@ -168,9 +177,11 @@ export const DeliveriesView: React.FC<DeliveriesViewProps> = ({
                 </span>
                 <div className="space-y-2">
                   {selectedSale.items
-                    .filter((i) => i.status === 'reservado' || i.status === 'disponivel_entrega')
+                    .filter((i) => i.status !== 'entregue')
                     .map((item) => {
                       const isChecked = selectedItems.includes(item.id);
+                      const isReady = item.status === 'reservado' || item.status === 'disponivel_entrega';
+
                       return (
                         <div
                           key={item.id}
@@ -188,7 +199,14 @@ export const DeliveriesView: React.FC<DeliveriesViewProps> = ({
                           }`}
                         >
                           <div>
-                            <span className="font-bold text-white">{item.productName}</span>
+                            <div className="flex items-center space-x-2">
+                              <span className="font-bold text-white">{item.productName}</span>
+                              {!isReady && (
+                                <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold uppercase">
+                                  Entrega Prioritária
+                                </span>
+                              )}
+                            </div>
                             <span className="text-[11px] text-amber-300 block">
                               Tamanho: {item.size} • Quantidade: {item.quantity}x
                             </span>

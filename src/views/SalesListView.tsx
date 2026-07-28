@@ -66,6 +66,8 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
   const [cancelReason, setCancelReason] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
   const [paymentAmount, setPaymentAmount] = useState('');
+  const [cardholderName, setCardholderName] = useState('');
+  const [cardholderIsMember, setCardholderIsMember] = useState(true);
 
   const activeProducts = products.filter((product) => product.active !== false && product.variants.length > 0);
 
@@ -135,13 +137,56 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
     };
   };
 
+  const getDeduplicatedItems = (items: SaleItem[]): SaleItem[] => {
+    const map = new Map<string, SaleItem>();
+    items.forEach((item) => {
+      const key = item.isKit
+        ? `kit-${item.kitId || item.productName}`
+        : `item-${item.productId || item.productName}-${item.variantId || item.size}`;
+      if (!map.has(key)) {
+        map.set(key, item);
+      }
+    });
+    return Array.from(map.values());
+  };
+
   const openEditModal = (sale: Sale) => {
     setEditingSale(sale);
-    setEditItems(sale.items.map((item) => ({ ...item, components: item.components ? [...item.components] : undefined })));
+    const cleanItems = getDeduplicatedItems(sale.items);
+    setEditItems(
+      cleanItems.map((item) => {
+        const existingProduct =
+          products.find((p) => p.id === item.productId) ||
+          products.find((p) => p.name.trim().toLowerCase() === item.productName.trim().toLowerCase()) ||
+          activeProducts[0];
+
+        if (!existingProduct) return { ...item, components: item.components ? [...item.components] : undefined };
+
+        const existingVariant =
+          existingProduct.variants.find((v) => v.id === item.variantId) ||
+          existingProduct.variants.find((v) => v.size.trim().toLowerCase() === item.size.trim().toLowerCase()) ||
+          existingProduct.variants[0];
+
+        const resolvedProductId = existingProduct.id;
+        const resolvedVariantId = existingVariant?.id || item.variantId || '';
+        const resolvedSize = existingVariant?.size || item.size;
+
+        return {
+          ...item,
+          productId: resolvedProductId,
+          productName: existingProduct.name,
+          variantId: resolvedVariantId,
+          size: resolvedSize,
+          unitPrice: existingVariant ? existingVariant.price : item.unitPrice,
+          totalPrice: (existingVariant ? existingVariant.price : item.unitPrice) * item.quantity,
+          components: item.components ? [...item.components] : undefined
+        };
+      })
+    );
   };
 
   const updateEditItem = (itemId: string, productId: string, variantId: string, quantity: number) => {
-    const product = activeProducts.find((p) => p.id === productId);
+    const product = products.find((p) => p.id === productId) || activeProducts.find((p) => p.id === productId);
     if (!product) return;
 
     setEditItems((prev) =>
@@ -212,6 +257,8 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
     setPaymentModalSale(sale);
     setPaymentMethod('PIX');
     setPaymentAmount(currencyInputValue(sale.pendingAmount || sale.totalAmount - sale.paidAmount));
+    setCardholderName('');
+    setCardholderIsMember(true);
   };
 
   const handleConfirmPayment = (e: React.FormEvent) => {
@@ -232,11 +279,17 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
       status: 'pago',
       paidAt: new Date().toISOString(),
       registeredBy: userName,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(paymentMethod === 'Cartão de crédito' ? {
+        cardholderName: cardholderIsMember ? paymentModalSale.memberName : cardholderName,
+        cardholderIsMember
+      } : {})
     });
 
     setPaymentModalSale(null);
     setPaymentAmount('');
+    setCardholderName('');
+    setCardholderIsMember(true);
   };
 
   return (
@@ -419,23 +472,48 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
 
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-[#F97316] uppercase tracking-wider">
-                Itens Comprados ({viewingSale.items.length})
+                Itens Comprados ({getDeduplicatedItems(viewingSale.items).length})
               </h4>
               <div className="space-y-1.5">
-                {viewingSale.items.map((it) => (
-                  <div key={it.id} className="bg-[#111111] p-3 rounded-lg border border-[#222222] flex items-center justify-between text-xs">
-                    <div>
-                      <div className="font-bold text-white">{it.productName}</div>
-                      <div className="text-[11px] text-gray-400">
-                        Tamanho: <span className="text-amber-300 font-bold">{it.size}</span> • Qtd: {it.quantity}
+                {getDeduplicatedItems(viewingSale.items).map((it) => (
+                  <div key={it.id} className="bg-[#111111] p-3 rounded-lg border border-[#222222] space-y-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-bold text-white flex items-center space-x-1.5">
+                          <span>{it.productName}</span>
+                          {it.isKit && (
+                            <span className="text-[9px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded uppercase">
+                              Kit Promocional
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-400">
+                          Tamanho: <span className="text-amber-300 font-bold">{it.size}</span> • Qtd: {it.quantity}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-[#F97316]">R$ {formatCurrency(it.totalPrice)}</div>
+                        <span className="text-[9px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded font-mono uppercase">
+                          {it.status.replace('_', ' ')}
+                        </span>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-bold text-[#F97316]">R$ {formatCurrency(it.totalPrice)}</div>
-                      <span className="text-[9px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded font-mono uppercase">
-                        {it.status.replace('_', ' ')}
-                      </span>
-                    </div>
+
+                    {it.isKit && it.components && it.components.length > 0 && (
+                      <div className="bg-[#181818] p-2.5 rounded-lg border border-[#2a2a2a] space-y-1 text-[11px]">
+                        <span className="text-[10px] font-bold text-amber-400 block uppercase">
+                          Componentes do Kit:
+                        </span>
+                        {it.components.map((comp) => (
+                          <div key={comp.id} className="flex items-center justify-between text-gray-300">
+                            <span>• {comp.productName} ({comp.size}) — {comp.quantity}x</span>
+                            <span className="text-[9px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded font-mono uppercase">
+                              {comp.status.replace('_', ' ')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -450,6 +528,11 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                     <span className="text-[10px] text-gray-500 block">
                       {p.paidAt ? new Date(p.paidAt).toLocaleDateString('pt-BR') : '-'} • Resp: {p.registeredBy}
                     </span>
+                    {p.cardholderName && (
+                      <span className="text-[10px] text-amber-300 block mt-0.5">
+                        Titular: {p.cardholderName}{p.cardholderIsMember === false ? ' (não membro)' : ''}
+                      </span>
+                    )}
                   </div>
                   <span className="font-mono font-bold text-emerald-400">R$ {formatCurrency(p.amount)}</span>
                 </div>
@@ -485,8 +568,16 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
 
             <div className="space-y-2">
               {editItems.map((item) => {
-                const selectedProduct = activeProducts.find((product) => product.id === item.productId) || activeProducts[0];
+                const selectedProduct =
+                  products.find((product) => product.id === item.productId) ||
+                  products.find((product) => product.name.trim().toLowerCase() === item.productName.trim().toLowerCase()) ||
+                  activeProducts[0];
+
                 const variants = selectedProduct?.variants || [];
+                const selectedVariant =
+                  variants.find((v) => v.id === item.variantId) ||
+                  variants.find((v) => v.size.trim().toLowerCase() === item.size.trim().toLowerCase()) ||
+                  variants[0];
 
                 return (
                   <div key={item.id} className="grid grid-cols-1 md:grid-cols-[1.5fr_1fr_0.6fr_0.8fr_auto] gap-2 bg-[#111111] border border-[#222222] rounded-xl p-3 text-xs items-end">
@@ -495,13 +586,13 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                       <select
                         value={selectedProduct?.id || ''}
                         onChange={(e) => {
-                          const product = activeProducts.find((p) => p.id === e.target.value);
+                          const product = products.find((p) => p.id === e.target.value);
                           if (!product) return;
                           updateEditItem(item.id, product.id, product.variants[0]?.id || '', item.quantity);
                         }}
                         className="w-full bg-[#1a1a1a] border border-[#333333] rounded px-3 py-2 text-white focus:outline-none focus:border-[#F97316]"
                       >
-                        {activeProducts.map((product) => (
+                        {products.map((product) => (
                           <option key={product.id} value={product.id}>
                             {product.name}
                           </option>
@@ -512,7 +603,7 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                     <div>
                       <label className="block text-gray-400 mb-1 font-semibold">Tamanho</label>
                       <select
-                        value={item.variantId || variants[0]?.id || ''}
+                        value={selectedVariant?.id || ''}
                         onChange={(e) => updateEditItem(item.id, selectedProduct.id, e.target.value, item.quantity)}
                         className="w-full bg-[#1a1a1a] border border-[#333333] rounded px-3 py-2 text-amber-300 font-bold focus:outline-none focus:border-[#F97316]"
                       >
@@ -626,7 +717,11 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
               <label className="block text-xs font-semibold text-gray-300 mb-1">Forma de Pagamento</label>
               <select
                 value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                onChange={(e) => {
+                  setPaymentMethod(e.target.value as PaymentMethod);
+                  setCardholderIsMember(true);
+                  setCardholderName('');
+                }}
                 className="w-full bg-[#111111] border border-[#333333] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-[#F97316]"
               >
                 <option value="PIX">PIX</option>
@@ -637,6 +732,33 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                 <option value="Outro">Outro</option>
               </select>
             </div>
+
+            {paymentMethod === 'Cartão de crédito' && (
+              <div className="space-y-2 bg-[#111111] border border-[#333333] rounded-xl p-3">
+                <span className="block text-[10px] font-bold text-amber-400 uppercase">Titular do Cartão</span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cardholderIsMember}
+                    onChange={(e) => {
+                      setCardholderIsMember(e.target.checked);
+                      if (e.target.checked) setCardholderName('');
+                    }}
+                    className="accent-[#F97316]"
+                  />
+                  <span className="text-xs text-gray-300">O próprio membro é o titular do cartão</span>
+                </label>
+                {!cardholderIsMember && (
+                  <input
+                    type="text"
+                    placeholder="Nome do titular do cartão"
+                    value={cardholderName}
+                    onChange={(e) => setCardholderName(e.target.value)}
+                    className="w-full bg-[#1a1a1a] border border-[#444] rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-semibold text-gray-300 mb-1">Valor Pago (R$)</label>

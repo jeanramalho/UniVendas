@@ -203,6 +203,8 @@ export interface Payment {
   registeredBy: string;
   notes?: string;
   createdAt: string;
+  cardholderName?: string;
+  cardholderIsMember?: boolean;
 }
 
 export interface Sale {

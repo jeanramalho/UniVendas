@@ -113,6 +113,243 @@ const AppContent: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
+  const resolveVariantIdInApp = (
+    currentProducts: Product[],
+    productId?: string,
+    productName?: string,
+    variantId?: string,
+    size?: string
+  ): string | null => {
+    const product =
+      (productId ? currentProducts.find((p) => p.id === productId) : null) ||
+      (productName ? currentProducts.find((p) => p.name.trim().toLowerCase() === productName.trim().toLowerCase()) : null);
+
+    if (!product) return null;
+
+    const variant =
+      (variantId ? product.variants.find((v) => v.id === variantId) : null) ||
+      (size ? product.variants.find((v) => v.size.trim().toLowerCase() === size.trim().toLowerCase()) : null) ||
+      product.variants[0];
+
+    return variant ? variant.id : null;
+  };
+
+  const isItemReservedStatus = (sale: Sale, itemStatus: string) => {
+    if (itemStatus === 'reservado' || itemStatus === 'disponivel_entrega') return true;
+    if (sale.paymentStatus === 'pago' && itemStatus === 'aguardando_pagamento') return true;
+    return false;
+  };
+
+  const getSalePaymentTime = (sale: Sale): number => {
+    if (sale.payments && sale.payments.length > 0) {
+      const validTimes = sale.payments
+        .map((p) => new Date(p.paidAt || p.createdAt).getTime())
+        .filter((t) => !isNaN(t));
+      if (validTimes.length > 0) {
+        return Math.min(...validTimes);
+      }
+    }
+    return new Date(sale.createdAt).getTime();
+  };
+
+  const syncAllReservedStock = (currentSales: Sale[], currentProducts: Product[], currentKits: Kit[] = kits) => {
+    // Track physical stock remaining per variant for FIFO allocation pass
+    const remainingPhysicalStock = new Map<string, number>();
+    currentProducts.forEach((p) => {
+      p.variants.forEach((v) => {
+        remainingPhysicalStock.set(v.id, Math.max(0, v.physicalStock));
+      });
+    });
+
+    // Sort active sales by payment status and chronological payment time (FIFO)
+    const sortedSales = [...currentSales].sort((a, b) => getSalePaymentTime(a) - getSalePaymentTime(b));
+
+    const reservedByVariant = new Map<string, number>();
+    let salesChanged = false;
+
+    const updatedSales = sortedSales.map((sale) => {
+      // Rule: Canceled sales or sales with no payment recorded (paidAmount <= 0) DO NOT reserve any physical stock
+      if (sale.overallStatus === 'cancelada' || sale.paidAmount <= 0) {
+        let itemReset = false;
+        const resetItems = sale.items.map((item) => {
+          let itemUpdated = false;
+          let newStatus = item.status;
+          if (item.status === 'reservado' || item.status === 'pedido_a_fazer') {
+            itemUpdated = true;
+            itemReset = true;
+            newStatus = 'aguardando_pagamento' as const;
+          }
+
+          let updatedComponents = item.components;
+          if (item.isKit && item.components && item.components.length > 0) {
+            updatedComponents = item.components.map((comp) => {
+              if (comp.status === 'reservado' || comp.status === 'pedido_a_fazer') {
+                itemUpdated = true;
+                itemReset = true;
+                return { ...comp, status: 'aguardando_pagamento' as const };
+              }
+              return comp;
+            });
+          }
+
+          if (itemUpdated) {
+            return { ...item, status: newStatus, components: updatedComponents };
+          }
+          return item;
+        });
+
+        if (itemReset) {
+          salesChanged = true;
+          const updatedSale = { ...sale, items: resetItems };
+          void saveSaleToSupabase(updatedSale);
+          return updatedSale;
+        }
+        return sale;
+      }
+
+      let saleItemChanged = false;
+
+      const updatedItems = sale.items.map((item) => {
+        // Items already delivered or manually checked in from supplier keep their status
+        if (item.status === 'entregue' || item.status === 'disponivel_entrega') {
+          if (item.status === 'disponivel_entrega') {
+            const vId = resolveVariantIdInApp(currentProducts, item.productId, item.productName, item.variantId, item.size);
+            if (vId) {
+              const currentStock = remainingPhysicalStock.get(vId) || 0;
+              remainingPhysicalStock.set(vId, Math.max(0, currentStock - item.quantity));
+              reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + item.quantity);
+            }
+          }
+          return item;
+        }
+
+        if (!item.isKit) {
+          const vId = resolveVariantIdInApp(currentProducts, item.productId, item.productName, item.variantId, item.size);
+          if (vId) {
+            const currentStock = remainingPhysicalStock.get(vId) || 0;
+            if (currentStock >= item.quantity) {
+              // FIFO Allocation: Paid order receives physical stock reservation
+              remainingPhysicalStock.set(vId, currentStock - item.quantity);
+              reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + item.quantity);
+              if (item.status !== 'reservado') {
+                saleItemChanged = true;
+                return { ...item, status: 'reservado' as const };
+              }
+            } else {
+              // Stock exhausted for this variant: Order moves to supplier queue (pedido_a_fazer)
+              if (item.status === 'reservado' || item.status === 'aguardando_pagamento') {
+                saleItemChanged = true;
+                return { ...item, status: 'pedido_a_fazer' as const };
+              }
+            }
+          }
+        } else {
+          // Process kit components with FIFO stock allocation
+          if (item.components && item.components.length > 0) {
+            const updatedComponents = item.components.map((comp) => {
+              if (comp.status === 'entregue' || comp.status === 'disponivel_entrega') {
+                if (comp.status === 'disponivel_entrega') {
+                  const vId = resolveVariantIdInApp(currentProducts, comp.productId, comp.productName, comp.variantId, comp.size);
+                  if (vId) {
+                    const currentStock = remainingPhysicalStock.get(vId) || 0;
+                    remainingPhysicalStock.set(vId, Math.max(0, currentStock - comp.quantity));
+                    reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + comp.quantity);
+                  }
+                }
+                return comp;
+              }
+
+              const vId = resolveVariantIdInApp(currentProducts, comp.productId, comp.productName, comp.variantId, comp.size);
+              if (vId) {
+                const currentStock = remainingPhysicalStock.get(vId) || 0;
+                if (currentStock >= comp.quantity) {
+                  remainingPhysicalStock.set(vId, currentStock - comp.quantity);
+                  reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + comp.quantity);
+                  if (comp.status !== 'reservado') {
+                    saleItemChanged = true;
+                    return { ...comp, status: 'reservado' as const };
+                  }
+                } else {
+                  if (comp.status === 'reservado' || comp.status === 'aguardando_pagamento') {
+                    saleItemChanged = true;
+                    return { ...comp, status: 'pedido_a_fazer' as const };
+                  }
+                }
+              }
+              return comp;
+            });
+
+            const allReserved = updatedComponents.every((c) => c.status === 'reservado' || c.status === 'disponivel_entrega' || c.status === 'entregue');
+            const anyReserved = updatedComponents.some((c) => c.status === 'reservado' || c.status === 'disponivel_entrega');
+            const kitStatus = allReserved ? 'reservado' : anyReserved ? 'reservado' : 'pedido_a_fazer';
+
+            return { ...item, components: updatedComponents, status: kitStatus as any };
+          } else {
+            const catalogKit =
+              currentKits.find((k) => k.id === item.kitId) ||
+              currentKits.find((k) => k.name.trim().toLowerCase() === item.productName.trim().toLowerCase());
+
+            if (catalogKit) {
+              catalogKit.items.forEach((ki) => {
+                const vId = resolveVariantIdInApp(currentProducts, ki.productId, ki.productName);
+                if (vId) {
+                  const needed = ki.quantity * item.quantity;
+                  const currentStock = remainingPhysicalStock.get(vId) || 0;
+                  if (currentStock >= needed) {
+                    remainingPhysicalStock.set(vId, currentStock - needed);
+                    reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + needed);
+                  }
+                }
+              });
+            }
+          }
+        }
+
+        return item;
+      });
+
+      if (saleItemChanged) {
+        salesChanged = true;
+        const hasMissingStock = updatedItems.some(
+          (i) => i.status === 'pedido_a_fazer' || (i.isKit && i.components?.some((c) => c.status === 'pedido_a_fazer'))
+        );
+        const overallStatus = hasMissingStock ? 'aguardando_pedido' : 'parcialmente_disponivel';
+        const updatedSale = { ...sale, items: updatedItems, overallStatus: overallStatus as any };
+        void saveSaleToSupabase(updatedSale);
+        return updatedSale;
+      }
+
+      return sale;
+    });
+
+    if (salesChanged) {
+      setSales(updatedSales);
+    }
+
+    let anyChanged = false;
+    const nextProducts = currentProducts.map((p) => {
+      let pChanged = false;
+      const nextVariants = p.variants.map((v) => {
+        const expectedReserved = reservedByVariant.get(v.id) || 0;
+        if (v.reservedStock !== expectedReserved) {
+          pChanged = true;
+          anyChanged = true;
+          return { ...v, reservedStock: expectedReserved };
+        }
+        return v;
+      });
+
+      if (!pChanged) return p;
+      const updatedP = { ...p, variants: nextVariants };
+      void saveProductToSupabase(updatedP);
+      return updatedP;
+    });
+
+    if (anyChanged) {
+      setProducts(nextProducts);
+    }
+  };
+
   // Load initial data from Supabase if configured
   useEffect(() => {
     async function loadSupabaseData() {
@@ -154,6 +391,79 @@ const AppContent: React.FC = () => {
       if (dbSales) setSales(dbSales);
       if (dbBatches) setBatches(dbBatches);
       setAuditLogs(dbAuditLogs);
+
+      if (dbProducts && dbSales) {
+        // Resolve legacy sales items stuck in aguardando_pagamento for paid sales
+        const tempAvailable = new Map<string, number>();
+        dbProducts.forEach((p) => {
+          p.variants.forEach((v) => {
+            tempAvailable.set(v.id, Math.max(0, v.physicalStock - v.reservedStock));
+          });
+        });
+
+        const fixedSales = dbSales.map((sale) => {
+          if (sale.overallStatus === 'cancelada' || sale.paidAmount <= 0) {
+            return sale;
+          }
+
+          let itemsChanged = false;
+          const updatedItems = sale.items.map((item) => {
+            if (item.status !== 'aguardando_pagamento') return item;
+
+            if (item.isKit && item.components && item.components.length > 0) {
+              const updatedComponents = item.components.map((comp) => {
+                if (comp.status !== 'aguardando_pagamento') return comp;
+                const vId = resolveVariantIdInApp(dbProducts, comp.productId, comp.productName, comp.variantId, comp.size);
+                if (vId) {
+                  const avail = tempAvailable.get(vId) || 0;
+                  if (avail >= comp.quantity) {
+                    tempAvailable.set(vId, avail - comp.quantity);
+                    itemsChanged = true;
+                    return { ...comp, status: 'reservado' as const };
+                  } else {
+                    itemsChanged = true;
+                    return { ...comp, status: 'pedido_a_fazer' as const };
+                  }
+                }
+                return comp;
+              });
+
+              const allReserved = updatedComponents.every((c) => c.status === 'reservado');
+              const anyReserved = updatedComponents.some((c) => c.status === 'reservado');
+              const kitStatus = allReserved ? 'reservado' : anyReserved ? 'reservado' : 'pedido_a_fazer';
+
+              return {
+                ...item,
+                components: updatedComponents,
+                status: kitStatus as any
+              };
+            }
+
+            const vId = resolveVariantIdInApp(dbProducts, item.productId, item.productName, item.variantId, item.size);
+            if (vId) {
+              const avail = tempAvailable.get(vId) || 0;
+              if (avail >= item.quantity) {
+                tempAvailable.set(vId, avail - item.quantity);
+                itemsChanged = true;
+                return { ...item, status: 'reservado' as const };
+              } else {
+                itemsChanged = true;
+                return { ...item, status: 'pedido_a_fazer' as const };
+              }
+            }
+
+            return item;
+          });
+
+          if (!itemsChanged) return sale;
+          const updatedSale = { ...sale, items: updatedItems };
+          void saveSaleToSupabase(updatedSale);
+          return updatedSale;
+        });
+
+        setSales(fixedSales);
+        syncAllReservedStock(fixedSales, dbProducts);
+      }
 
       if (dbUsers && dbUsers.length > 0) {
         setUsers(dbUsers);
@@ -267,15 +577,49 @@ const AppContent: React.FC = () => {
     void saveKitToSupabase(k);
   };
 
+
+
   const getSaleReservedStockMap = (sale: Sale) => {
     const reservedByVariant = new Map<string, number>();
-    if (sale.paymentStatus !== 'pago') return reservedByVariant;
+    if (sale.overallStatus === 'cancelada') return reservedByVariant;
 
-    sale.items
-      .filter((item) => item.status === 'reservado' && item.variantId)
-      .forEach((item) => {
-        reservedByVariant.set(item.variantId!, (reservedByVariant.get(item.variantId!) || 0) + item.quantity);
-      });
+    sale.items.forEach((item) => {
+      if (item.status === 'entregue') return;
+
+      if (!item.isKit) {
+        if (isItemReservedStatus(sale, item.status)) {
+          const vId = resolveVariantIdInApp(products, item.productId, item.productName, item.variantId, item.size);
+          if (vId) {
+            reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + item.quantity);
+          }
+        }
+      } else {
+        if (item.components && item.components.length > 0) {
+          item.components.forEach((comp) => {
+            if (comp.status === 'entregue') return;
+            if (isItemReservedStatus(sale, comp.status || item.status)) {
+              const vId = resolveVariantIdInApp(products, comp.productId, comp.productName, comp.variantId, comp.size);
+              if (vId) {
+                reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + comp.quantity);
+              }
+            }
+          });
+        } else {
+          const catalogKit =
+            kits.find((k) => k.id === item.kitId) ||
+            kits.find((k) => k.name.trim().toLowerCase() === item.productName.trim().toLowerCase());
+
+          if (catalogKit && isItemReservedStatus(sale, item.status)) {
+            catalogKit.items.forEach((ki) => {
+              const vId = resolveVariantIdInApp(products, ki.productId, ki.productName);
+              if (vId) {
+                reservedByVariant.set(vId, (reservedByVariant.get(vId) || 0) + (ki.quantity * item.quantity));
+              }
+            });
+          }
+        }
+      }
+    });
 
     return reservedByVariant;
   };
@@ -399,15 +743,67 @@ const AppContent: React.FC = () => {
   const handleAddPayment = (saleId: string, payment: Payment) => {
     const now = new Date().toISOString();
     let paidSale: Sale | null = null;
+    let prevSale: Sale | null = null;
 
     setSales((prev) =>
       prev.map((s) => {
         if (s.id !== saleId) return s;
+        prevSale = s;
 
         const paidAmount = Math.min(s.totalAmount, s.paidAmount + payment.amount);
         const pendingAmount = Math.max(0, s.totalAmount - paidAmount);
         const paymentStatus = pendingAmount <= 0 ? 'pago' : 'parcialmente_pago';
-        const hasMissingStock = s.items.some((i) => i.status === 'pedido_a_fazer');
+
+        // Update item statuses when fully paid: aguardando_pagamento -> reservado or pedido_a_fazer
+        let updatedItems = s.items;
+        if (paymentStatus === 'pago') {
+          const tempAvailable = new Map<string, number>();
+          products.forEach((p) => {
+            p.variants.forEach((v) => {
+              tempAvailable.set(v.id, Math.max(0, v.physicalStock - v.reservedStock));
+            });
+          });
+
+          updatedItems = s.items.map((item) => {
+            if (item.status !== 'aguardando_pagamento') return item;
+
+            if (item.isKit && item.components) {
+              const updatedComponents = item.components.map((comp) => {
+                if (comp.status !== 'aguardando_pagamento' || !comp.variantId) return comp;
+                const avail = tempAvailable.get(comp.variantId) || 0;
+                if (avail >= comp.quantity) {
+                  tempAvailable.set(comp.variantId, avail - comp.quantity);
+                  return { ...comp, status: 'reservado' as const };
+                } else {
+                  return { ...comp, status: 'pedido_a_fazer' as const };
+                }
+              });
+              const allReserved = updatedComponents.every((c) => c.status === 'reservado');
+              return {
+                ...item,
+                components: updatedComponents,
+                status: allReserved ? ('reservado' as const) : ('pedido_a_fazer' as const)
+              };
+            }
+
+            if (item.variantId) {
+              const avail = tempAvailable.get(item.variantId) || 0;
+              if (avail >= item.quantity) {
+                tempAvailable.set(item.variantId, avail - item.quantity);
+                return { ...item, status: 'reservado' as const };
+              } else {
+                return { ...item, status: 'pedido_a_fazer' as const };
+              }
+            }
+
+            return item;
+          });
+        }
+
+        const hasMissingStock = updatedItems.some(
+          (i) => i.status === 'pedido_a_fazer' ||
+            (i.isKit && i.components?.some((c) => c.status === 'pedido_a_fazer'))
+        );
         const overallStatus =
           paymentStatus === 'pago'
             ? hasMissingStock
@@ -421,6 +817,7 @@ const AppContent: React.FC = () => {
           pendingAmount,
           paymentStatus,
           overallStatus,
+          items: updatedItems,
           payments: [...s.payments, { ...payment, saleId, status: paymentStatus }],
           updatedAt: now
         };
@@ -432,7 +829,7 @@ const AppContent: React.FC = () => {
     );
 
     if (paidSale?.paymentStatus === 'pago') {
-      reserveSaleStock(paidSale);
+      applySaleReservationDelta(prevSale, paidSale);
     }
   };
 
@@ -534,33 +931,143 @@ const AppContent: React.FC = () => {
   const handleSaveConference = (updatedBatch: PurchaseBatch) => {
     setBatches(batches.map((b) => (b.id === updatedBatch.id ? updatedBatch : b)));
     void savePurchaseBatchToSupabase(updatedBatch);
+
+    if (updatedBatch.status === 'recebido' || updatedBatch.status === 'em_conferencia') {
+      const receivedVariantMap = new Map<string, number>();
+      updatedBatch.items.forEach((bItem) => {
+        if (bItem.variantId && bItem.quantityReceived > 0) {
+          receivedVariantMap.set(
+            bItem.variantId,
+            (receivedVariantMap.get(bItem.variantId) || 0) + bItem.quantityReceived
+          );
+        }
+      });
+
+      if (receivedVariantMap.size > 0) {
+        setProducts((prev) =>
+          prev.map((p) => {
+            let changed = false;
+            const updatedProd = {
+              ...p,
+              variants: p.variants.map((v) => {
+                const received = receivedVariantMap.get(v.id);
+                if (!received) return v;
+                changed = true;
+                return { ...v, physicalStock: v.physicalStock + received };
+              })
+            };
+            if (!changed) return p;
+            void saveProductToSupabase(updatedProd);
+            return updatedProd;
+          })
+        );
+      }
+
+      const batchSaleItemIds = new Set(updatedBatch.items.map((bi) => bi.saleItemId));
+      if (batchSaleItemIds.size > 0) {
+        setSales((prev) =>
+          prev.map((sale) => {
+            let changed = false;
+            const updatedItems = sale.items.map((item) => {
+              if (!batchSaleItemIds.has(item.id)) return item;
+              if (
+                item.status === 'recebido' ||
+                item.status === 'em_conferencia' ||
+                item.status === 'conferido_com_divergencia' ||
+                item.status === 'aguardando_fornecedor' ||
+                item.status === 'recebido_parcialmente'
+              ) {
+                changed = true;
+                return { ...item, status: 'disponivel_entrega' as any };
+              }
+              return item;
+            });
+            if (!changed) return sale;
+            const hasMissingStock = updatedItems.some((i) => i.status === 'pedido_a_fazer');
+            const allReady = updatedItems.every(
+              (i) => i.status === 'disponivel_entrega' || i.status === 'entregue'
+            );
+            const updatedSale = {
+              ...sale,
+              items: updatedItems,
+              overallStatus: allReady ? 'disponivel_entrega' : hasMissingStock ? 'parcialmente_disponivel' : sale.overallStatus
+            };
+            void saveSaleToSupabase(updatedSale);
+            return updatedSale;
+          })
+        );
+      }
+    }
   };
 
   const handleConfirmDelivery = (record: DeliveryRecord) => {
+    const deliveredVariantDeltas = new Map<string, number>();
+
     // Update items status in sales to delivered
     setSales((prev) =>
       prev.map((s) => {
-        if (s.id === record.saleId) {
-          const updatedItems = s.items.map((i) => {
-            const delivered = record.items.find((ri) => ri.saleItemId === i.id);
-            if (delivered) {
-              return { ...i, status: 'entregue' as any };
-            }
-            return i;
-          });
+        if (s.id !== record.saleId) return s;
 
-          const allDelivered = updatedItems.every((i) => i.status === 'entregue');
-          const updatedSale = {
-            ...s,
-            items: updatedItems,
-            overallStatus: allDelivered ? 'entregue' : s.overallStatus
-          };
-          void saveSaleToSupabase(updatedSale);
-          return updatedSale;
-        }
-        return s;
+        const updatedItems = s.items.map((i) => {
+          const delivered = record.items.find((ri) => ri.saleItemId === i.id);
+          if (!delivered) return i;
+
+          if (!i.isKit && i.variantId) {
+            deliveredVariantDeltas.set(
+              i.variantId,
+              (deliveredVariantDeltas.get(i.variantId) || 0) + i.quantity
+            );
+          }
+          if (i.isKit && i.components) {
+            i.components.forEach((comp) => {
+              if (comp.variantId) {
+                deliveredVariantDeltas.set(
+                  comp.variantId,
+                  (deliveredVariantDeltas.get(comp.variantId) || 0) + comp.quantity
+                );
+              }
+            });
+          }
+
+          const updatedComponents = i.components?.map((c) => ({ ...c, status: 'entregue' as any }));
+          return { ...i, status: 'entregue' as any, components: updatedComponents };
+        });
+
+        const allDelivered = updatedItems.every((i) => i.status === 'entregue');
+        const updatedSale = {
+          ...s,
+          items: updatedItems,
+          overallStatus: allDelivered ? 'entregue' : s.overallStatus
+        };
+        void saveSaleToSupabase(updatedSale);
+        return updatedSale;
       })
     );
+
+    // Decrement physical stock and reserved stock for delivered items
+    if (deliveredVariantDeltas.size > 0) {
+      setProducts((prev) =>
+        prev.map((p) => {
+          let changed = false;
+          const updatedProd = {
+            ...p,
+            variants: p.variants.map((v) => {
+              const delta = deliveredVariantDeltas.get(v.id);
+              if (!delta) return v;
+              changed = true;
+              return {
+                ...v,
+                physicalStock: Math.max(0, v.physicalStock - delta),
+                reservedStock: Math.max(0, v.reservedStock - delta)
+              };
+            })
+          };
+          if (!changed) return p;
+          void saveProductToSupabase(updatedProd);
+          return updatedProd;
+        })
+      );
+    }
   };
 
   const handleProcessReturn = (record: ReturnExchangeRecord) => {

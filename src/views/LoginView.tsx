@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Shield, KeyRound, AlertCircle, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { AppSettings } from '../types';
-import { INITIAL_SETTINGS } from '../data/initialData';
+import { CLUB_LOGO_URL, DESBRAVADORES_LOGO_URL, INITIAL_SETTINGS } from '../data/initialData';
 
 interface LoginViewProps {
   settings?: AppSettings;
@@ -74,6 +74,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ settings = INITIAL_SETTING
             <img
               src={currentSettings.clubLogoUrl}
               alt="Logo Clube"
+              onError={(e) => {
+                e.currentTarget.src = CLUB_LOGO_URL;
+              }}
               className="w-16 h-16 object-contain rounded-lg bg-zinc-900/80 p-1 border border-zinc-700 shadow"
             />
           )}
@@ -81,6 +84,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ settings = INITIAL_SETTING
             <img
               src={currentSettings.desbravadoresLogoUrl}
               alt="Logo Desbravadores"
+              onError={(e) => {
+                e.currentTarget.src = DESBRAVADORES_LOGO_URL;
+              }}
               className="w-16 h-16 object-contain rounded-lg bg-zinc-900/80 p-1 border border-zinc-700 shadow"
             />
           )}

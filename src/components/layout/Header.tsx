@@ -2,7 +2,7 @@ import React from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { LogOut, ShieldCheck, Database, Menu } from 'lucide-react';
 import { AppSettings } from '../../types';
-import { INITIAL_SETTINGS } from '../../data/initialData';
+import { CLUB_LOGO_URL, DESBRAVADORES_LOGO_URL, INITIAL_SETTINGS } from '../../data/initialData';
 
 interface HeaderProps {
   settings?: AppSettings;
@@ -44,6 +44,9 @@ export const Header: React.FC<HeaderProps> = ({
               <img
                 src={currentSettings.clubLogoUrl}
                 alt="Clube Logo"
+                onError={(e) => {
+                  e.currentTarget.src = CLUB_LOGO_URL;
+                }}
                 className="w-9 h-9 object-contain rounded bg-zinc-900/80 p-0.5 border border-zinc-700"
               />
             ) : null}
@@ -51,6 +54,9 @@ export const Header: React.FC<HeaderProps> = ({
               <img
                 src={currentSettings.desbravadoresLogoUrl}
                 alt="Desbravadores Logo"
+                onError={(e) => {
+                  e.currentTarget.src = DESBRAVADORES_LOGO_URL;
+                }}
                 className="w-9 h-9 object-contain rounded bg-zinc-900/80 p-0.5 border border-zinc-700"
               />
             ) : null}
