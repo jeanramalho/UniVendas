@@ -26,18 +26,10 @@ export const PendingOrdersView: React.FC<PendingOrdersViewProps> = ({ sales, onC
         eligibleItems.push({ sale: s, item });
       }
 
-<<<<<<< HEAD
       // Expand kit components with status pedido_a_fazer
       if (item.isKit && item.components) {
         item.components.forEach((comp) => {
           if (comp.status === 'pedido_a_fazer') {
-=======
-      // Also expand kit components with pedido_a_fazer
-      if (item.isKit && item.components) {
-        item.components.forEach((comp) => {
-          if (comp.status === 'pedido_a_fazer') {
-            // Represent the component as a virtual SaleItem for display/batch creation
->>>>>>> refs/remotes/origin/main
             const virtualItem: SaleItem = {
               id: comp.id,
               saleId: s.id,

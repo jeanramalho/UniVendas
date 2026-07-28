@@ -152,7 +152,6 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
 
   const openEditModal = (sale: Sale) => {
     setEditingSale(sale);
-<<<<<<< HEAD
     const cleanItems = getDeduplicatedItems(sale.items);
     setEditItems(
       cleanItems.map((item) => {
@@ -184,26 +183,6 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
         };
       })
     );
-=======
-    // Build editItems using the stored productId/size to find the correct product/variant in the catalog
-    setEditItems(sale.items.map((item) => {
-      const existingProduct = activeProducts.find((p) => p.id === item.productId);
-      if (!existingProduct) return { ...item, components: item.components ? [...item.components] : undefined };
-      // Find variant by ID first, then by size as fallback
-      const existingVariant =
-        existingProduct.variants.find((v) => v.id === item.variantId) ||
-        existingProduct.variants.find((v) => v.size === item.size) ||
-        existingProduct.variants[0];
-      const resolvedVariantId = existingVariant?.id || item.variantId || '';
-      return {
-        ...item,
-        productId: existingProduct.id,
-        variantId: resolvedVariantId,
-        size: existingVariant?.size || item.size,
-        components: item.components ? [...item.components] : undefined
-      };
-    }));
->>>>>>> refs/remotes/origin/main
   };
 
   const updateEditItem = (itemId: string, productId: string, variantId: string, quantity: number) => {
@@ -496,11 +475,7 @@ export const SalesListView: React.FC<SalesListViewProps> = ({
                 Itens Comprados ({getDeduplicatedItems(viewingSale.items).length})
               </h4>
               <div className="space-y-1.5">
-<<<<<<< HEAD
                 {getDeduplicatedItems(viewingSale.items).map((it) => (
-=======
-                {viewingSale.items.map((it) => (
->>>>>>> refs/remotes/origin/main
                   <div key={it.id} className="bg-[#111111] p-3 rounded-lg border border-[#222222] space-y-2 text-xs">
                     <div className="flex items-center justify-between">
                       <div>

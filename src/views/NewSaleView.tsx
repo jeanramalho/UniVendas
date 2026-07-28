@@ -176,11 +176,7 @@ export const NewSaleView: React.FC<NewSaleViewProps> = ({
           size: chosenSize,
           quantity: ki.quantity,
           unitPrice: p?.basePrice || 45.0,
-<<<<<<< HEAD
           status: 'aguardando_pagamento' as SaleItemStatus
-=======
-          status: 'aguardando_pagamento' as SaleItemStatus // will be updated after payment
->>>>>>> refs/remotes/origin/main
         };
       })
     };

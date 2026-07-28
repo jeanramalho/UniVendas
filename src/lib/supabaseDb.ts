@@ -548,7 +548,6 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
       // Deduplicate items if legacy duplicate rows exist in database
       const uniqueItemsMap = new Map<string, typeof rawItems[0]>();
       rawItems.forEach((item: any) => {
-<<<<<<< HEAD
         // Key by product/variant/size/kit identity to filter out duplicate database rows
         const itemKey = item.isKit
           ? `kit-${item.kitId || item.productName}`
@@ -577,16 +576,6 @@ export async function fetchSalesFromSupabase(): Promise<Sale[] | null> {
           void supabase.from('sale_items').delete().in('id', duplicateIds);
         }
       }
-
-=======
-        // Unique key combines id or item content
-        const itemKey = item.id;
-        if (!uniqueItemsMap.has(itemKey)) {
-          uniqueItemsMap.set(itemKey, item);
-        }
-      });
-
->>>>>>> refs/remotes/origin/main
       return {
         id: s.id,
         code: s.code,
