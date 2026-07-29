@@ -8,7 +8,8 @@ import {
   ProductCategory,
   PurchaseBatch,
   Sale,
-  UserProfile
+  UserProfile,
+  DeliveryRecord
 } from '../types';
 
 // ==========================================
@@ -135,13 +136,15 @@ function rowToProduct(p: any): Product {
     .filter((s: any) => s.active !== false)
     .sort((a: any, b: any) => (a.size_order || 0) - (b.size_order || 0))
     .map((s: any) => s.size_name);
-  const allowedSizeSet = savedSizes.length > 0 ? new Set(savedSizes) : null;
-  const existingVariants = (p.product_variants || []).filter((v: any) => !allowedSizeSet || allowedSizeSet.has(v.size));
-  const variantsBySize = new Map(existingVariants.map((v: any) => [v.size, v]));
+  const allowedSizeSet = savedSizes.length > 0 ? new Set(savedSizes.map((s: string) => s.trim().toLowerCase())) : null;
+  const existingVariants = (p.product_variants || []).filter(
+    (v: any) => !allowedSizeSet || (v.size && allowedSizeSet.has(v.size.trim().toLowerCase()))
+  );
+  const variantsBySize = new Map(existingVariants.map((v: any) => [v.size ? v.size.trim().toLowerCase() : '', v]));
   const orderedVariantRows =
     savedSizes.length > 0
       ? savedSizes.map((sizeName) => {
-          const existing = variantsBySize.get(sizeName);
+          const existing = variantsBySize.get(sizeName.trim().toLowerCase());
           return (
             existing || {
               id: `missing-variant-${p.id}-${sizeName}`,
@@ -749,6 +752,92 @@ export async function saveSaleToSupabase(sale: Sale): Promise<boolean> {
     return true;
   } catch (err) {
     console.warn('Supabase save sale failed:', err);
+    return false;
+  }
+}
+
+// ==========================================
+// DELIVERIES (Entregas aos Membros)
+// ==========================================
+
+export async function fetchDeliveryRecordsFromSupabase(): Promise<DeliveryRecord[] | null> {
+  if (!isSupabaseConfigured) return null;
+  try {
+    const { data, error } = await supabase
+      .from('delivery_records')
+      .select('*, delivery_items(*)')
+      .order('delivered_at', { ascending: false });
+
+    if (error) {
+      console.warn('Supabase fetch deliveries error:', error.message);
+      return null;
+    }
+
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      saleId: row.sale_id,
+      saleCode: row.sale_code,
+      memberId: row.member_id,
+      memberName: row.member_name,
+      memberUnit: row.member_unit,
+      deliveredTo: row.delivered_to,
+      deliveredBy: row.delivered_by || '',
+      deliveredAt: row.delivered_at || new Date().toISOString(),
+      notes: row.notes || '',
+      items: (row.delivery_items || []).map((di: any) => ({
+        saleItemId: di.sale_item_id,
+        productName: di.product_name,
+        size: di.size,
+        quantity: Number(di.quantity || 0)
+      }))
+    }));
+  } catch (err) {
+    console.warn('Supabase fetch deliveries failed:', err);
+    return null;
+  }
+}
+
+export async function saveDeliveryRecordToSupabase(record: DeliveryRecord): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const isUuidValue = (value?: string) =>
+      Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
+    const isUuid = isUuidValue(record.id);
+
+    const dRow: any = {
+      sale_id: isUuidValue(record.saleId) ? record.saleId : null,
+      sale_code: record.saleCode,
+      member_id: isUuidValue(record.memberId) ? record.memberId : null,
+      member_name: record.memberName,
+      member_unit: record.memberUnit,
+      delivered_to: record.deliveredTo,
+      delivered_at: record.deliveredAt || new Date().toISOString()
+    };
+    if (isUuid) dRow.id = record.id;
+
+    const { data, error } = await supabase.from('delivery_records').insert(dRow).select('id');
+    if (error || !data || data.length === 0) {
+      console.warn('Supabase insert delivery error:', error?.message);
+      return false;
+    }
+
+    const savedDeliveryId = data[0].id;
+    if (record.items && record.items.length > 0) {
+      const itemRows = record.items.map((item) => ({
+        delivery_id: savedDeliveryId,
+        sale_item_id: isUuidValue(item.saleItemId) ? item.saleItemId : null,
+        product_name: item.productName,
+        size: item.size,
+        quantity: item.quantity
+      }));
+      const { error: itemErr } = await supabase.from('delivery_items').insert(itemRows);
+      if (itemErr) {
+        console.warn('Supabase insert delivery items error:', itemErr.message);
+      }
+    }
+    return true;
+  } catch (err) {
+    console.warn('Supabase save delivery failed:', err);
     return false;
   }
 }

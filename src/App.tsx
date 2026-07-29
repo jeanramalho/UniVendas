@@ -75,8 +75,11 @@ import {
   fetchPurchaseBatchesFromSupabase,
   savePurchaseBatchToSupabase,
   saveUserToSupabase,
-  fetchProfilesFromSupabase
+  fetchProfilesFromSupabase,
+  fetchDeliveryRecordsFromSupabase,
+  saveDeliveryRecordToSupabase
 } from './lib/supabaseDb';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { getAuditLogs, logAuditEvent } from './lib/audit';
 
 const normalizeSettingsLogos = (settings: AppSettings): AppSettings => {
@@ -467,13 +470,41 @@ const AppContent: React.FC = () => {
 
       if (dbUsers && dbUsers.length > 0) {
         setUsers(dbUsers);
-      } else {
-        setUsers([]);
       }
 
       setDataReady(true);
     }
-    loadSupabaseData();
+
+    void loadSupabaseData();
+  }, []);
+
+  // Supabase Realtime Subscription: Escuta alterações no banco de dados para atualizar a tela sem F5
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+
+    const channel = supabase
+      .channel('univendas-realtime-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public' },
+        () => {
+          void (async () => {
+            const [dbProducts, dbSales, dbBatches] = await Promise.all([
+              fetchProductsFromSupabase(),
+              fetchSalesFromSupabase(),
+              fetchPurchaseBatchesFromSupabase()
+            ]);
+            if (dbProducts) setProducts(dbProducts);
+            if (dbSales) setSales(dbSales);
+            if (dbBatches) setBatches(dbBatches);
+          })();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, []);
 
   if (authLoading) {
@@ -1003,28 +1034,32 @@ const AppContent: React.FC = () => {
   const handleConfirmDelivery = (record: DeliveryRecord) => {
     const deliveredVariantDeltas = new Map<string, number>();
 
-    // Update items status in sales to delivered
+    // Persistir histórico de entrega no Supabase
+    void saveDeliveryRecordToSupabase(record);
+
+    // Atualizar status dos itens da venda para entregue e computar deltas de variantes
     setSales((prev) =>
       prev.map((s) => {
-        if (s.id !== record.saleId) return s;
+        if (s.id !== record.saleId && s.code !== record.saleCode) return s;
 
         const updatedItems = s.items.map((i) => {
-          const delivered = record.items.find((ri) => ri.saleItemId === i.id);
-          if (!delivered) return i;
+          const delivered = record.items.find(
+            (ri) => ri.saleItemId === i.id || (ri.productName === i.productName && ri.size === i.size)
+          );
+          if (!delivered || i.status === 'entregue') return i;
 
-          if (!i.isKit && i.variantId) {
-            deliveredVariantDeltas.set(
-              i.variantId,
-              (deliveredVariantDeltas.get(i.variantId) || 0) + i.quantity
-            );
-          }
-          if (i.isKit && i.components) {
+          const qtyToDeliver = delivered.quantity || i.quantity;
+
+          if (!i.isKit) {
+            const vId = resolveVariantIdInApp(products, i.productId, i.productName, i.variantId, i.size);
+            if (vId) {
+              deliveredVariantDeltas.set(vId, (deliveredVariantDeltas.get(vId) || 0) + qtyToDeliver);
+            }
+          } else if (i.isKit && i.components) {
             i.components.forEach((comp) => {
-              if (comp.variantId) {
-                deliveredVariantDeltas.set(
-                  comp.variantId,
-                  (deliveredVariantDeltas.get(comp.variantId) || 0) + comp.quantity
-                );
+              const vId = resolveVariantIdInApp(products, comp.productId, comp.productName, comp.variantId, comp.size);
+              if (vId) {
+                deliveredVariantDeltas.set(vId, (deliveredVariantDeltas.get(vId) || 0) + comp.quantity);
               }
             });
           }
@@ -1037,14 +1072,14 @@ const AppContent: React.FC = () => {
         const updatedSale = {
           ...s,
           items: updatedItems,
-          overallStatus: allDelivered ? 'entregue' : s.overallStatus
+          overallStatus: allDelivered ? ('entregue' as any) : s.overallStatus
         };
         void saveSaleToSupabase(updatedSale);
         return updatedSale;
       })
     );
 
-    // Decrement physical stock and reserved stock for delivered items
+    // Decrementar estoque físico e estoque reservado das variantes entregues
     if (deliveredVariantDeltas.size > 0) {
       setProducts((prev) =>
         prev.map((p) => {

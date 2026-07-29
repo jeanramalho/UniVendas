@@ -300,7 +300,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
                 {/* Variants stock badges */}
                 <div className="space-y-1">
-                  <span className="text-[10px] text-gray-400 block font-semibold">Tamanhos e Estoque:</span>
+                  <span className="text-[10px] text-gray-400 block font-semibold">Tamanhos e Estoque (Físico | Disponível):</span>
                   <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
                     {p.variants.map((v) => {
                       const availV = v.physicalStock - v.reservedStock;
@@ -314,7 +314,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                           }`}
                         >
                           <span className="font-bold">{v.size}:</span>
-                          <span>{availV} disp</span>
+                          <span>{v.physicalStock} fís ({availV} disp)</span>
                         </div>
                       );
                     })}
